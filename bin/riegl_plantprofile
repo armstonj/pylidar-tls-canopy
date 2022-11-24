@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+
+DESCRIPTION='''
+riegl_canopy: Create a vertical plant profile
+
+John Armston
+University of Maryland
+October 2022
+'''
+
+from riegl_canopy import riegl_io
+from riegl_canopy import plant_profile
+
+import os
+import argparse
+import numpy as np
+from tqdm import tqdm
+
+
+RDB_ATTRIBUTES = {'riegl.xyz': 'riegl_xyz','riegl.target_index': 'target_index', 
+                  'riegl.target_count': 'target_count'}
+
+
+def get_args():
+    """
+    Get the command line arguments
+    """
+    argparser = argparse.ArgumentParser(description=DESCRIPTION, formatter_class=argparse.RawDescriptionHelpFormatter)
+    argparser.add_argument('-r','--rxp_input', metavar='FILE', type=str, nargs='+',
+        help='Input RIEGL rxp filenames (typically upright then tilt scans')
+    argparser.add_argument('-d','--rdbx_input', metavar='FILE', type=str, nargs='+',
+        help='Input RIEGL rdbx filenames (must match rxp filename order')
+    argparser.add_argument('-o','--outfile', metavar='FILE', type=str, default=None,
+        help='Output plant profile filename (CSV)')
+    argparser.add_argument('-p','--pgap_outfile', metavar='FILE', type=str, default=None,
+        help='Output Pgap profile filename (CSV)')
+    argparser.add_argument('-c','--chunk_size', metavar='INT', type=int, default=100000,
+        help='Chunksize for reading rdbx files')
+    argparser.add_argument('--height_resolution', metavar='FLOAT', type=float, default=0.5,
+        help='Vertical resolution (height)')
+    argparser.add_argument('--zenith_resolution', metavar='FLOAT', type=float, default=5,
+        help='Zenith resolution (degrees)')
+    argparser.add_argument('--min_zenith', metavar='FLOAT', type=float, default=None, nargs='+',
+        help='Minimum zenith angle to use for input file')
+    argparser.add_argument('--max_zenith', metavar='FLOAT', type=float, default=None, nargs='+',
+        help='Maximum zenith angle to use for input file')
+    argparser.add_argument('--min_azimuth', metavar='FLOAT', type=float, default=None, nargs='+',
+        help='Minimum azimuth angle to use for input file')
+    argparser.add_argument('--max_azimuth', metavar='FLOAT', type=float, default=None, nargs='+',
+        help='Maximum azimuth angle to use for input file')
+    argparser.add_argument('--grid_extent', metavar='FLOAT', type=float, default=60,
+        help='Plane fit grid extent (m)')
+    argparser.add_argument('--grid_resolution', metavar='FLOAT', type=float, default=10,
+        help='Plane fit grid resolution (m)')
+    argparser.add_argument('-t','--transform_file', metavar='FILE', type=str, nargs='+',
+        help='Input RIEGL transform dat filename')
+    argparser.add_argument('-R','--reportfile', metavar='FILE', type=str,
+        help='Plane fitting report file')
+    args = argparser.parse_args()
+
+    if args.outfile is None:
+        args.outfile = 'plant_profiles.csv'
+    
+    return args
+
+
+if __name__ == "__main__":
+
+    args = get_args()
+
+    # Get the ground plane
+    print('Fitting the ground plane')
+    ncols = nrows = (args.grid_extent // args.grid_resolution ) + 1
+    outgrid = np.empty((4,nrows,ncols), dtype=np.float32)
+    valid = np.zeros((nrows,ncols), dtype=bool)
+    for i,fn in enumerate(args.rdbx_input):
+        with riegl_io.RDBFile(fn, chunk_size=args.chunk_size, attributes=RDB_ATTRIBUTES,
+            transform_file=args.transform_file[i]) as rdb:
+            while rdb.point_count_current < rdb.point_count_total:
+                rdb.read_next_chunk()
+                if rdb.point_count > 0:
+                    x = rdb.get_chunk('x')
+                    y = rdb.get_chunk('y')
+                    z = rdb.get_chunk('z')
+                    r = rdb.get_chunk('range')
+                    plant_profile.min_z_grid(x, y, z, r, -args.grid_extent/2, args.grid_extent/2, 
+                        args.grid_resolution, outgrid, valid)
+    planefit = plant_profile.plane_fit_hubers(outgrid[0,:,:][valid], outgrid[1,:,:][valid], 
+        outgrid[2,:,:][valid], w=1/outgrid[3,:,:][valid], reportfile=args.reportfile)   
+
+    # Initialize the profile
+    min_zenith_r = np.radians(args.min_zenith)
+    max_zenith_r = np.radians(args.max_zenith)
+    min_azimuth_r = np.radians(args.min_azimuth)
+    max_azimuth_r = np.radians(args.max_azimuth)
+    vpp = plant_profile.Jupp2009(hres=args.height_resolution, zres=args.zenith_resolution, 
+        min_z=min(args.min_zenith), max_z=max(args.max_zenith), min_h=0, max_h=50) 
+
+    # Read the target data
+    print('Reading the rdbx file data')
+    for i,fn in enumerate(args.rdbx_input):
+        with riegl_io.RDBFile(fn, chunk_size=args.chunk_size, attributes=RDB_ATTRIBUTES, 
+            transform_file=args.transform_file[i]) as rdb:
+            while rdb.point_count_current < rdb.point_count_total:
+                rdb.read_next_chunk()
+                if rdb.point_count > 0:
+                    zenith = rdb.get_chunk('zenith')
+                    azimuth = rdb.get_chunk('azimuth')
+                    index = rdb.get_chunk('target_index')
+                    count = rdb.get_chunk('target_count')
+                    x = rdb.get_chunk('x')
+                    y = rdb.get_chunk('y')
+                    z = rdb.get_chunk('z')
+                    height = z - (planefit['Parameters'][1] * x +
+                        planefit['Parameters'][2] * y + planefit['Parameters'][0])
+                    idx = (zenith >= min_zenith_r[i]) & (zenith < max_zenith_r[i])
+                    idx &= (azimuth >= min_azimuth_r[i]) & (azimuth < max_azimuth_r[i])
+                    if np.any(idx):
+                        vpp.add_targets(height[idx], index[idx], count[idx], zenith[idx], 
+                            method='WEIGHTED')
+
+    # Read the shot data
+    print('Reading the rxp file data')
+    for i,fn in enumerate(args.rxp_input):
+        with riegl_io.RXPFile(fn, transform_file=args.transform_file[i]) as rxp:
+            azimuth = rxp.get_data('azimuth', return_as_point_attribute=False)
+            zenith = rxp.get_data('zenith', return_as_point_attribute=False)
+            idx = (zenith >= min_zenith_r[i]) & (zenith < max_zenith_r[i])
+            idx &= (azimuth >= min_azimuth_r[i]) & (azimuth < max_azimuth_r[i])
+            if np.any(idx):
+                vpp.add_shots(zenith[idx])
+
+    # Run and export the profiles
+    print('Creating the vertical plant profiles')
+    vpp.get_pgap_theta_z()
+    vpp.exportPlantProfiles(outfile=args.outfile)
+    if args.pgap_outfile is not None:
+        vpp.exportPgapProfiles(outfile=args.pgap_outfile)
+
