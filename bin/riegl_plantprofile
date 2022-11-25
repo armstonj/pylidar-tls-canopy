@@ -58,6 +58,8 @@ def get_args():
         help='Input RIEGL transform dat filename')
     argparser.add_argument('-R','--reportfile', metavar='FILE', type=str,
         help='Plane fitting report file')
+    argparser.add_argument('-m','--method', metavar='STR', type=str, default='WEIGHTED', choices=('WEIGHTED','FIRST','ALL'),
+        help='Method for calculating Pgap from the point clouds')
     args = argparser.parse_args()
 
     if args.outfile is None:
@@ -87,7 +89,7 @@ if __name__ == "__main__":
     for i in range(n_pos):
         print(f'Reading scan position {i+1:d}')
         vpp.add_scan_position(args.rdbx_input[i],args.rxp_input[i],args.transform_file[i], planefit,
-            method='WEIGHTED', min_zenith=args.min_zenith[i], max_zenith=args.max_zenith[i])
+            method=args.method, min_zenith=args.min_zenith[i], max_zenith=args.max_zenith[i])
 
     # Run and export the profiles
     print('Creating the vertical plant profiles')
