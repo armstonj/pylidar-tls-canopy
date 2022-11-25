@@ -60,13 +60,19 @@ class Jupp2009:
             print(f'{method} is not a recognized target weighting method')
             exit(1)
 
-    def add_shots(self, shot_zenith, shot_azimuth):
+    def add_shots(self, target_count, shot_zenith, shot_azimuth, method='WEIGHTED'):
         """
         Add shots
         """
         z_idx = np.int16((shot_zenith - self.min_z_r) // self.zres_r)
         a_idx = np.int16(shot_azimuth // self.ares_r)
-        shot_cnt = np.ones(shot_zenith.shape[0], dtype=np.float32)
+        if method in ('WEIGHTED','FIRST'):
+            shot_cnt = np.ones(target_count.shape[0], dtype=np.float32)
+        elif method == 'ALL':
+            shot_cnt = target_count.astype(np.float32)
+        else:
+            print(f'{method} is not a recognized target weighting method')
+            exit(1)
         sum_by_index_2d(shot_cnt, z_idx, a_idx, self.shot_output)
 
     def add_scan_position(self, rdbx_file, rxp_file, transform_file, planefit,
@@ -96,16 +102,49 @@ class Jupp2009:
                     idx = (zenith >= min_zenith_r) & (zenith < max_zenith_r)
                     if np.any(idx):
                         self.add_targets(height[idx], index[idx], count[idx], zenith[idx],
-                        azimuth[idx], method='WEIGHTED')
+                        azimuth[idx], method=method)
 
         with riegl_io.RXPFile(rxp_file, transform_file=transform_file) as rxp:
             azimuth = rxp.get_data('azimuth', return_as_point_attribute=False)
             zenith = rxp.get_data('zenith', return_as_point_attribute=False)
+            count = rxp.get_data('target_count', return_as_point_attribute=False)
             idx = (zenith >= min_zenith_r) & (zenith < max_zenith_r)
             if np.any(idx):
-                self.add_shots(zenith[idx], azimuth[idx])
+                self.add_shots(count[idx], zenith[idx], azimuth[idx], method=method)
 
-    def get_pgap_theta_z(self, min_azimuth=0, max_azimuth=360):
+    def add_scan_position_rxp(self, rxp_file, transform_file, planefit,
+        method='WEIGHTED', min_zenith=5, max_zenith=70):
+        """
+        Add a scan position to the profile
+        """
+        min_zenith_r = np.radians(min_zenith)
+        max_zenith_r = np.radians(max_zenith)
+
+        with riegl_io.RXPFile(rxp_file, transform_file=transform_file) as rxp:
+            # Point data
+            azimuth = rxp.get_data('azimuth', return_as_point_attribute=True)
+            zenith = rxp.get_data('zenith', return_as_point_attribute=True)
+            index = rxp.get_data('target_index', return_as_point_attribute=True)
+            count = rxp.get_data('target_count', return_as_point_attribute=True)
+            x = rxp.get_data('x', return_as_point_attribute=True)
+            y = rxp.get_data('y', return_as_point_attribute=True)
+            z = rxp.get_data('z', return_as_point_attribute=True)
+            height = z - (planefit['Parameters'][1] * x +
+                planefit['Parameters'][2] * y + planefit['Parameters'][0])
+            idx = (zenith >= min_zenith_r) & (zenith < max_zenith_r)
+            if np.any(idx):
+                self.add_targets(height[idx], index[idx], count[idx], zenith[idx],
+                azimuth[idx], method=method)
+
+            # Pulse data
+            azimuth = rxp.get_data('azimuth', return_as_point_attribute=False)
+            zenith = rxp.get_data('zenith', return_as_point_attribute=False)
+            count = rxp.get_data('target_count', return_as_point_attribute=False)
+            idx = (zenith >= min_zenith_r) & (zenith < max_zenith_r)
+            if np.any(idx):
+                self.add_shots(count[idx], zenith[idx], azimuth[idx], method=method)
+
+    def get_pgap_theta_z(self, min_azimuth=0, max_azimuth=360, invert=False):
         """
         Get the Pgap by zenith and height bin for a given azimuth bin range
         """
@@ -116,6 +155,8 @@ class Jupp2009:
         mina = min_azimuth - self.ares / 2
         maxa = max_azimuth + self.ares / 2
         idx = (self.azimuth_bin >= mina) & (self.azimuth_bin < maxa)
+        if invert:
+            idx = ~idx
         cover_theta_z = np.nanmean(cover_theta_z[:,idx,:], axis=1)
 
         self.pgap_theta_z = 1 - cover_theta_z 
@@ -258,6 +299,27 @@ def get_min_z_grid(rdbx_files, transform_files, grid_extent, grid_resolution):
     return x,y,z,r
 
 
+def get_min_z_grid_rxp(rxp_files, transform_files, grid_extent, grid_resolution):
+    """
+    Wrapper function a minimum z grid for input to the ground plane fitting
+    Using RXP only as input
+    """
+    ncols = nrows = int(grid_extent // grid_resolution) + 1
+    outgrid = np.empty((4,nrows,ncols), dtype=np.float32)
+    valid = np.zeros((nrows,ncols), dtype=bool)
+    for i,fn in enumerate(rxp_files):
+        with riegl_io.RXPFile(fn, transform_file=transform_files[i]) as rxp:
+            x = rxp.get_data('x', return_as_point_attribute=True)
+            y = rxp.get_data('y', return_as_point_attribute=True)
+            z = rxp.get_data('z', return_as_point_attribute=True)
+            r = rxp.get_data('range', return_as_point_attribute=True)
+            min_z_grid(x, y, z, r, -grid_extent/2, grid_extent/2,
+                grid_resolution, outgrid, valid)
+    x,y,z,r = (outgrid[0,:,:][valid], outgrid[1,:,:][valid],
+               outgrid[2,:,:][valid], outgrid[3,:,:][valid])
+    return x,y,z,r
+
+
 @njit 
 def sum_by_index_2d(values, idx1, idx2, output):
     """
@@ -355,9 +417,6 @@ def plane_fit_hubers(x, y, z, w=None, reportfile=None):
     Plane fitting (Huber's T norm with median absolute deviation scaling)
     Prior weights are set to 1 / point range
     """
-
-    # https://stackoverflow.com/questions/45532967/statsmodels-weights-in-robust-linear-regression
-
     if w is None:
         w = np.ones(z.shape, dtype=np.float32)
     wz = w * z
