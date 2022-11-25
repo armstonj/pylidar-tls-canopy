@@ -5,64 +5,118 @@ from numba import njit
 
 import statsmodels.api as sm
 
+from . import riegl_io
+
 
 class Jupp2009:
     """
     Class for Foliage Profiles from Jupp 2009
     """
-    def __init__(self, hres=0.5, zres=5, min_z=0, max_z=70, min_h=0, max_h=50):
+    def __init__(self, hres=0.5, zres=5, ares=45, min_z=0, max_z=70, 
+                 min_h=0, max_h=50):
         self.hres = hres
         self.zres = zres
+        self.ares = ares
         self.min_z = min_z
         self.max_z = max_z
         self.min_h = min_h
         self.max_h = max_h
 
+        self.min_z_r = np.radians(min_z)
         self.zres_r = np.radians(zres)
-        ncols = int( (max_h - min_h) // hres )
-        nrows = int( (max_z - min_z) // zres )
-        self.target_output = np.zeros((nrows, ncols), dtype=np.float32)
-        self.shot_output = np.zeros((nrows,1), dtype=np.float32)
+        self.ares_r = np.radians(ares)
+
+        self.height_bin = np.arange(self.min_h, self.max_h, self.hres)
+        self.zenith_bin = np.arange(self.min_z, self.max_z, self.zres) + self.zres / 2
+        self.azimuth_bin = np.arange(0, 360, self.ares) + self.ares / 2 
+
+        nhbins = int( (max_h - min_h) // hres )
+        nzbins = int( (max_z - min_z) // zres )
+        nabins = int(360 // ares)        
+
+        self.target_output = np.zeros((nzbins, nabins, nhbins), dtype=np.float32)
+        self.shot_output = np.zeros((nzbins,nabins,1), dtype=np.float32)
 
     def add_targets(self, target_height, target_index, target_count, target_zenith, 
-        method='WEIGHTED'):
+        target_azimuth, method='WEIGHTED'):
         """
         Add targets
         """
-        h_idx = np.uint16(target_height // self.hres)
-        z_idx = np.uint16(target_zenith // self.zres_r)
+        h_idx = np.int16((target_height - self.min_h) // self.hres)
+        z_idx = np.int16((target_zenith - self.min_z_r) // self.zres_r)
+        a_idx = np.int16(target_azimuth // self.ares_r)
         if method == 'WEIGHTED':
             w = 1 / target_count
-            sum_by_index_2d(w, z_idx, h_idx, self.target_output)
+            sum_by_index_3d(w, z_idx, a_idx, h_idx, self.target_output)
         elif method == 'ALL':
             w = np.ones(target_height.shape[0], dtype=np.float32)
-            sum_by_index_2d(w, z_idx, h_idx, self.target_output)
+            sum_by_index_3d(w, z_idx, a_idx, h_idx, self.target_output)
         elif method == 'FIRST':
             idx = (target_index == 1)
             w = np.ones(np.count_nonzero(idx), dtype=np.float32)
-            sum_by_index_2d(w, z_idx[idx], h_idx[idx], self.target_output)
+            sum_by_index_3d(w, z_idx[idx], a_idx[idx], h_idx[idx], 
+                self.target_output)
         else:
             print(f'{method} is not a recognized target weighting method')
             exit(1)
 
-    def add_shots(self, shot_zenith):
+    def add_shots(self, shot_zenith, shot_azimuth):
         """
         Add shots
         """
-        idx = np.uint16(shot_zenith // self.zres_r)
+        z_idx = np.int16((shot_zenith - self.min_z_r) // self.zres_r)
+        a_idx = np.int16(shot_azimuth // self.ares_r)
         shot_cnt = np.ones(shot_zenith.shape[0], dtype=np.float32)
-        sum_by_index_1d(shot_cnt, idx, self.shot_output)
-        
-    def get_pgap_theta_z(self):
+        sum_by_index_2d(shot_cnt, z_idx, a_idx, self.shot_output)
+
+    def add_scan_position(self, rdbx_file, rxp_file, transform_file, planefit,
+        method='WEIGHTED', min_zenith=5, max_zenith=70):
         """
-        Get the Pgap by zenith and height bin
+        Add a scan position to the profile
         """
-        self.height_bin = np.arange(self.min_h, self.max_h, self.hres)
-        self.zenith_bin = np.arange(self.min_z, self.max_z, self.zres) + self.zres / 2
+        min_zenith_r = np.radians(min_zenith)
+        max_zenith_r = np.radians(max_zenith)
         
+        rdb_attributes = {'riegl.xyz': 'riegl_xyz','riegl.target_index': 'target_index',
+            'riegl.target_count': 'target_count'}        
+        with riegl_io.RDBFile(rdbx_file, chunk_size=100000, attributes=rdb_attributes,
+            transform_file=transform_file) as rdb:
+            while rdb.point_count_current < rdb.point_count_total:
+                rdb.read_next_chunk()
+                if rdb.point_count > 0:
+                    zenith = rdb.get_chunk('zenith')
+                    azimuth = rdb.get_chunk('azimuth')
+                    index = rdb.get_chunk('target_index')
+                    count = rdb.get_chunk('target_count')
+                    x = rdb.get_chunk('x')
+                    y = rdb.get_chunk('y')
+                    z = rdb.get_chunk('z')
+                    height = z - (planefit['Parameters'][1] * x +
+                        planefit['Parameters'][2] * y + planefit['Parameters'][0])
+                    idx = (zenith >= min_zenith_r) & (zenith < max_zenith_r)
+                    if np.any(idx):
+                        self.add_targets(height[idx], index[idx], count[idx], zenith[idx],
+                        azimuth[idx], method='WEIGHTED')
+
+        with riegl_io.RXPFile(rxp_file, transform_file=transform_file) as rxp:
+            azimuth = rxp.get_data('azimuth', return_as_point_attribute=False)
+            zenith = rxp.get_data('zenith', return_as_point_attribute=False)
+            idx = (zenith >= min_zenith_r) & (zenith < max_zenith_r)
+            if np.any(idx):
+                self.add_shots(zenith[idx], azimuth[idx])
+
+    def get_pgap_theta_z(self, min_azimuth=0, max_azimuth=360):
+        """
+        Get the Pgap by zenith and height bin for a given azimuth bin range
+        """
         cover_theta_z = np.full(self.target_output.shape, np.nan, dtype=float)
-        np.divide(np.cumsum(self.target_output,axis=1), self.shot_output, out=cover_theta_z, 
+        np.divide(np.cumsum(self.target_output,axis=2), self.shot_output, out=cover_theta_z, 
             where=self.shot_output > 0)
+
+        mina = min_azimuth - self.ares / 2
+        maxa = max_azimuth + self.ares / 2
+        idx = (self.azimuth_bin >= mina) & (self.azimuth_bin < maxa)
+        cover_theta_z = np.nanmean(cover_theta_z[:,idx,:], axis=1)
 
         self.pgap_theta_z = 1 - cover_theta_z 
 
@@ -179,6 +233,31 @@ class Jupp2009:
             df.to_csv(outfile, float_format='%.05f', index=False)
 
 
+def get_min_z_grid(rdbx_files, transform_files, grid_extent, grid_resolution):
+    """
+    Wrapper function a minimum z grid for input to the ground plane fitting
+    """
+    rdb_attributes = {'riegl.xyz': 'riegl_xyz'}
+    ncols = nrows = int(grid_extent // grid_resolution) + 1
+    outgrid = np.empty((4,nrows,ncols), dtype=np.float32)
+    valid = np.zeros((nrows,ncols), dtype=bool)
+    for i,fn in enumerate(rdbx_files):
+        with riegl_io.RDBFile(fn, chunk_size=100000, attributes=rdb_attributes,
+            transform_file=transform_files[i]) as rdb:
+            while rdb.point_count_current < rdb.point_count_total:
+                rdb.read_next_chunk()
+                if rdb.point_count > 0:
+                    x = rdb.get_chunk('x')
+                    y = rdb.get_chunk('y')
+                    z = rdb.get_chunk('z')
+                    r = rdb.get_chunk('range')
+                    min_z_grid(x, y, z, r, -grid_extent/2, grid_extent/2,
+                        grid_resolution, outgrid, valid)
+    x,y,z,r = (outgrid[0,:,:][valid], outgrid[1,:,:][valid], 
+               outgrid[2,:,:][valid], outgrid[3,:,:][valid])
+    return x,y,z,r
+
+
 @njit 
 def sum_by_index_2d(values, idx1, idx2, output):
     """
@@ -186,9 +265,11 @@ def sum_by_index_2d(values, idx1, idx2, output):
     """
     inbounds = ( (idx1 >= 0) & (idx1 < output.shape[0]) &
                  (idx2 >= 0) & (idx2 < output.shape[1]) )
-    for v,y,x,b in zip(values, idx1, idx2, inbounds):
-        if b:
-            output[y,x] += v
+    for i in range(values.shape[0]):
+        if inbounds[i]:
+            y = int(idx1[i])
+            x = int(idx2[i])
+            output[y,x] += values[i]
 
 
 @njit
@@ -197,9 +278,26 @@ def sum_by_index_1d(values, idx, output):
     Sum point values by one index
     """
     inbounds = (idx >= 0) & (idx < output.shape[0])
-    for v,i,b in zip(values, idx, inbounds):
-        if b:
-            output[i] += v
+    for i in range(values.shape[0]):
+        if inbounds[i]:
+            y = int(idx[i])
+            output[y] += values[i]
+
+
+@njit
+def sum_by_index_3d(values, idx1, idx2, idx3, output):
+    """
+    Sum point values by one index
+    """
+    inbounds = ( (idx1 >= 0) & (idx1 < output.shape[0]) &
+                 (idx2 >= 0) & (idx2 < output.shape[1]) &
+                 (idx3 >= 0) & (idx3 < output.shape[2]))
+    for i in range(values.shape[0]):
+        if inbounds[i]:
+            z = int(idx1[i])
+            y = int(idx2[i])
+            x = int(idx3[i])
+            output[z,y,x] += values[i]
 
 
 def calcGroundPlane(x, y, z, r, resolution=10, reportfile=None):

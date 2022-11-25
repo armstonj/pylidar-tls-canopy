@@ -40,13 +40,15 @@ def get_args():
         help='Vertical resolution (height)')
     argparser.add_argument('--zenith_resolution', metavar='FLOAT', type=float, default=5,
         help='Zenith resolution (degrees)')
+    argparser.add_argument('--azimuth_resolution', metavar='FLOAT', type=float, default=45,
+        help='Azimuth resolution (degrees)')
     argparser.add_argument('--min_zenith', metavar='FLOAT', type=float, default=None, nargs='+',
         help='Minimum zenith angle to use for input file')
     argparser.add_argument('--max_zenith', metavar='FLOAT', type=float, default=None, nargs='+',
         help='Maximum zenith angle to use for input file')
-    argparser.add_argument('--min_azimuth', metavar='FLOAT', type=float, default=None, nargs='+',
+    argparser.add_argument('--min_azimuth', metavar='FLOAT', type=float, default=None, 
         help='Minimum azimuth angle to use for input file')
-    argparser.add_argument('--max_azimuth', metavar='FLOAT', type=float, default=None, nargs='+',
+    argparser.add_argument('--max_azimuth', metavar='FLOAT', type=float, default=None,
         help='Maximum azimuth angle to use for input file')
     argparser.add_argument('--grid_extent', metavar='FLOAT', type=float, default=60,
         help='Plane fit grid extent (m)')
@@ -70,69 +72,26 @@ if __name__ == "__main__":
 
     # Get the ground plane
     print('Fitting the ground plane')
-    ncols = nrows = (args.grid_extent // args.grid_resolution ) + 1
-    outgrid = np.empty((4,nrows,ncols), dtype=np.float32)
-    valid = np.zeros((nrows,ncols), dtype=bool)
-    for i,fn in enumerate(args.rdbx_input):
-        with riegl_io.RDBFile(fn, chunk_size=args.chunk_size, attributes=RDB_ATTRIBUTES,
-            transform_file=args.transform_file[i]) as rdb:
-            while rdb.point_count_current < rdb.point_count_total:
-                rdb.read_next_chunk()
-                if rdb.point_count > 0:
-                    x = rdb.get_chunk('x')
-                    y = rdb.get_chunk('y')
-                    z = rdb.get_chunk('z')
-                    r = rdb.get_chunk('range')
-                    plant_profile.min_z_grid(x, y, z, r, -args.grid_extent/2, args.grid_extent/2, 
-                        args.grid_resolution, outgrid, valid)
-    planefit = plant_profile.plane_fit_hubers(outgrid[0,:,:][valid], outgrid[1,:,:][valid], 
-        outgrid[2,:,:][valid], w=1/outgrid[3,:,:][valid], reportfile=args.reportfile)   
+    x,y,z,r = plant_profile.get_min_z_grid(args.rdbx_input, args.transform_file, 
+        args.grid_extent, args.grid_resolution)
+    planefit = plant_profile.plane_fit_hubers(x, y, z, w=1/r, reportfile=args.reportfile)
 
     # Initialize the profile
     min_zenith_r = np.radians(args.min_zenith)
     max_zenith_r = np.radians(args.max_zenith)
-    min_azimuth_r = np.radians(args.min_azimuth)
-    max_azimuth_r = np.radians(args.max_azimuth)
-    vpp = plant_profile.Jupp2009(hres=args.height_resolution, zres=args.zenith_resolution, 
+    vpp = plant_profile.Jupp2009(hres=args.height_resolution, zres=args.zenith_resolution, ares=args.azimuth_resolution, 
         min_z=min(args.min_zenith), max_z=max(args.max_zenith), min_h=0, max_h=50) 
 
-    # Read the target data
-    print('Reading the rdbx file data')
-    for i,fn in enumerate(args.rdbx_input):
-        with riegl_io.RDBFile(fn, chunk_size=args.chunk_size, attributes=RDB_ATTRIBUTES, 
-            transform_file=args.transform_file[i]) as rdb:
-            while rdb.point_count_current < rdb.point_count_total:
-                rdb.read_next_chunk()
-                if rdb.point_count > 0:
-                    zenith = rdb.get_chunk('zenith')
-                    azimuth = rdb.get_chunk('azimuth')
-                    index = rdb.get_chunk('target_index')
-                    count = rdb.get_chunk('target_count')
-                    x = rdb.get_chunk('x')
-                    y = rdb.get_chunk('y')
-                    z = rdb.get_chunk('z')
-                    height = z - (planefit['Parameters'][1] * x +
-                        planefit['Parameters'][2] * y + planefit['Parameters'][0])
-                    idx = (zenith >= min_zenith_r[i]) & (zenith < max_zenith_r[i])
-                    idx &= (azimuth >= min_azimuth_r[i]) & (azimuth < max_azimuth_r[i])
-                    if np.any(idx):
-                        vpp.add_targets(height[idx], index[idx], count[idx], zenith[idx], 
-                            method='WEIGHTED')
-
-    # Read the shot data
-    print('Reading the rxp file data')
-    for i,fn in enumerate(args.rxp_input):
-        with riegl_io.RXPFile(fn, transform_file=args.transform_file[i]) as rxp:
-            azimuth = rxp.get_data('azimuth', return_as_point_attribute=False)
-            zenith = rxp.get_data('zenith', return_as_point_attribute=False)
-            idx = (zenith >= min_zenith_r[i]) & (zenith < max_zenith_r[i])
-            idx &= (azimuth >= min_azimuth_r[i]) & (azimuth < max_azimuth_r[i])
-            if np.any(idx):
-                vpp.add_shots(zenith[idx])
+    # Read the data
+    n_pos = len(args.transform_file)
+    for i in range(n_pos):
+        print(f'Reading scan position {i:d}')
+        vpp.add_scan_position(args.rdbx_input[i],args.rxp_input[i],args.transform_file[i], planefit,
+            method='WEIGHTED', min_zenith=args.min_zenith[i], max_zenith=args.max_zenith[i])
 
     # Run and export the profiles
     print('Creating the vertical plant profiles')
-    vpp.get_pgap_theta_z()
+    vpp.get_pgap_theta_z(min_azimuth=args.min_azimuth, max_azimuth=args.max_azimuth)
     vpp.exportPlantProfiles(outfile=args.outfile)
     if args.pgap_outfile is not None:
         vpp.exportPgapProfiles(outfile=args.pgap_outfile)
