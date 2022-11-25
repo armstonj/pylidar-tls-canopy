@@ -85,7 +85,7 @@ if __name__ == "__main__":
     # Read the data
     n_pos = len(args.transform_file)
     for i in range(n_pos):
-        print(f'Reading scan position {i:d}')
+        print(f'Reading scan position {i+1:d}')
         vpp.add_scan_position(args.rdbx_input[i],args.rxp_input[i],args.transform_file[i], planefit,
             method='WEIGHTED', min_zenith=args.min_zenith[i], max_zenith=args.max_zenith[i])
 
