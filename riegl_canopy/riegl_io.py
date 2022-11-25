@@ -29,6 +29,8 @@ class RXPFile:
             with open(pose_file,'r') as f:
                 pose = json.load(f)
             self.transform = calc_transform_matrix(pose['pitch'], pose['roll'], pose['yaw'])
+        else:
+            self.transform = None
 
     def __enter__(self):
         self.read_file()
@@ -100,11 +102,14 @@ class RXPFile:
 
 class RDBFile:
     def __init__(self, filename, attributes=DEFAULT_RDB_ATTRIBUTES, chunk_size=100000, 
-        transform_file=None, query_str=None):
+        transform_file=None, query_str=None, first_only=False):
         self.filename = filename
         self.point_attributes = attributes
         self.chunk_size = chunk_size
-        self.query_str = query_str
+        if first_only:
+            self.query_str = '(riegl.target_index == 1)'
+        else:
+            self.query_str = query_str
         self.transform_file = transform_file
         self.query = None
 
