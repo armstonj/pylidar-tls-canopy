@@ -45,7 +45,9 @@ def get_args():
     argparser.add_argument('-p','--pose_file', metavar='FILE', type=str,
         help='Input RIEGL pose filename (for RXP file processing')
     argparser.add_argument('-t','--transform_file', metavar='FILE', type=str,
-        help='Input RIEGL transform dat filenameg')
+        help='Input RIEGL transform dat filename')
+    argparser.add_argument('-m','--method', metavar='STR', type=str, choices=['MEAN','MAX','MIN','SUM'], default='MEAN',
+        help='Method to apply per grid cell')
     args = argparser.parse_args()
 
     if args.output is None:
@@ -82,7 +84,7 @@ if __name__ == "__main__":
                             yidx = np.uint16(rdb.get_chunk('zenith') // res)
                             zidx = np.uint16(rdb.get_chunk('range') // args.range_resolution)
                             vals = rdb.get_chunk(args.attribute)
-                            grd.add_values(vals, xidx, yidx, zidx)
+                            grd.add_values(vals, xidx, yidx, zidx, method=args.method)
                         pbar.update(rdb.point_count)
                 grd.finalize_grid()
                 descriptions = [f'Range {i*args.range_resolution:.2f}' for i in range(nvars)]
@@ -107,7 +109,7 @@ if __name__ == "__main__":
                 xidx = rxp.get_data('azimuth', return_as_point_attribute=return_as_point_attribute) // res
                 yidx = rxp.get_data('zenith', return_as_point_attribute=return_as_point_attribute) // res
                 vals = rxp.get_data(args.attribute, return_as_point_attribute=return_as_point_attribute)
-                grd.add_values(vals, np.uint16(xidx), np.uint16(yidx), np.uint16(zidx))
+                grd.add_values(vals, np.uint16(xidx), np.uint16(yidx), np.uint16(zidx), method=args.method)
                 grd.finalize_grid()
                 descriptions = [f'Range {i*args.range_resolution:.2f}' for i in range(nvars)]
                 grd.write_grid(args.output, descriptions=descriptions)

@@ -1,4 +1,15 @@
+#!/usr/bin/env python3
+"""
+riegl_canopy
 
+Code for vertical profiles
+
+John Armston
+University of Maryland
+October 2022
+"""
+
+import sys
 import numpy as np
 import pandas as pd
 from numba import njit
@@ -58,7 +69,7 @@ class Jupp2009:
                 self.target_output)
         else:
             print(f'{method} is not a recognized target weighting method')
-            exit(1)
+            sys.exit()
 
     def add_shots(self, target_count, shot_zenith, shot_azimuth, method='WEIGHTED'):
         """
@@ -72,13 +83,25 @@ class Jupp2009:
             shot_cnt = target_count.astype(np.float32)
         else:
             print(f'{method} is not a recognized target weighting method')
-            exit(1)
+            sys.exit()
         sum_by_index_2d(shot_cnt, z_idx, a_idx, self.shot_output)
 
-    def add_scan_position(self, rdbx_file, rxp_file, transform_file, planefit,
+    def add_scan_position(self, rxp_file, transform_file, planefit, rdbx_file=None,
         method='WEIGHTED', min_zenith=5, max_zenith=70):
         """
         Add a scan position to the profile
+        """
+        if rdbx_file is None:
+            self.add_scan_position_rxp(rxp_file, transform_file, planefit,
+                method=method, min_zenith=min_zenith, max_zenith=max_zenith)
+        else:
+            self.add_scan_position_rdbx(rdbx_file, rxp_file, transform_file, planefit,
+                method=method, min_zenith=min_zenith, max_zenith=max_zenith)
+
+    def add_scan_position_rdbx(self, rdbx_file, rxp_file, transform_file, planefit,
+        method='WEIGHTED', min_zenith=5, max_zenith=70):
+        """
+        Add a scan position to the profile using rdbx
         """
         min_zenith_r = np.radians(min_zenith)
         max_zenith_r = np.radians(max_zenith)
@@ -115,7 +138,8 @@ class Jupp2009:
     def add_scan_position_rxp(self, rxp_file, transform_file, planefit,
         method='WEIGHTED', min_zenith=5, max_zenith=70):
         """
-        Add a scan position to the profile
+        Add a scan position to the profile using rxp
+        VZ400 and/or pulse rate <=300 kHz only
         """
         min_zenith_r = np.radians(min_zenith)
         max_zenith_r = np.radians(max_zenith)
@@ -224,7 +248,7 @@ class Jupp2009:
             total_pai = np.max(hpp_pai)
         elif not isinstance(total_pai, float):
             print('Total PAI has not been defined')
-            exit(1)
+            sys.exit()
          
         pai = total_pai * ratio
 
@@ -274,7 +298,20 @@ class Jupp2009:
             df.to_csv(outfile, float_format='%.05f', index=False)
 
 
-def get_min_z_grid(rdbx_files, transform_files, grid_extent, grid_resolution):
+def get_min_z_grid(input_files, transform_files, grid_extent, grid_resolution, rxp=False):
+    """
+    Wrapper function a minimum z grid for input to the ground plane fitting
+    """
+    if not rxp:
+        x,y,z,r = get_min_z_grid_rdbx(input_files, transform_files, 
+            grid_extent, grid_resolution)
+    else:
+        x,y,z,r = get_min_z_grid_rxp(input_files, transform_files, 
+            grid_extent, grid_resolution)
+    return x,y,z,r
+
+
+def get_min_z_grid_rdbx(rdbx_files, transform_files, grid_extent, grid_resolution):
     """
     Wrapper function a minimum z grid for input to the ground plane fitting
     """

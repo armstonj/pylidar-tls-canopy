@@ -13,6 +13,7 @@ import riegl.rdb
 
 import riegl_rxp
 
+import sys
 import json
 import numpy as np
 
@@ -95,7 +96,7 @@ class RXPFile:
             valid = self.points['valid']
         else:
             print(f'{name:} is not a pulse or point attribute')
-            exit(1)
+            sys.exit()
         
         return data[valid]
 

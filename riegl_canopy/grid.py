@@ -9,7 +9,7 @@ University of Maryland
 October 2022
 """
 
-
+import sys
 import numpy as np
 from numba import njit
 
@@ -63,22 +63,22 @@ class RIEGLGrid:
         """
         self.outgrid[zidx,yidx,xidx] = values
 
-    def add_values(self, values, xidx, yidx, zidx):
+    def add_values(self, values, xidx, yidx, zidx, method='MEAN'):
         """
         Add values to indexed location on grid
         """
         if np.isscalar(zidx):
             zidx = np.full(yidx.shape, zidx, dtype=yidx.dtype)
-        sum_by_idx(values, xidx, yidx, zidx, self.profile['nodata'], 
-            self.outgrid, self.cntgrid)
+        add_by_idx(values, xidx, yidx, zidx, self.profile['nodata'], 
+            self.outgrid, self.cntgrid, method=method)
 
-    def finalize_grid(self):
+    def finalize_grid(self, method='MEAN'):
         """
         Finalize grid
         """
-        if self.init_cntgrid:
+        if method == 'MEAN':
             tmp = np.full((self.nvars,self.nrows,self.ncols),
-            self.profile['nodata'], dtype=self.profile['dtype'])
+                self.profile['nodata'], dtype=self.profile['dtype'])
             np.divide(self.outgrid, self.cntgrid, out=tmp, where=self.cntgrid > 0, dtype=np.float32)
             self.outgrid = tmp
 
@@ -102,19 +102,89 @@ class RIEGLGrid:
 
 
 @njit
-def sum_by_idx(values, xidx, yidx, zidx, nodata, outgrid, cntgrid):
+def add_by_idx(values, xidx, yidx, zidx, nodata, outgrid, cntgrid, method='SUM'):
     """
-    Numba function to sum values over a grid
+    Numba function to add values over a grid
     """
     for i in range(values.shape[0]):
         if outgrid[zidx[i],yidx[i],xidx[i]] != nodata:
-            outgrid[zidx[i],yidx[i],xidx[i]] += values[i]
+            if method in ('MEAN','SUM'):
+                outgrid[zidx[i],yidx[i],xidx[i]] += values[i]
+            elif method == 'MAX':
+                if values[i] > outgrid[zidx[i],yidx[i],xidx[i]]:
+                    outgrid[zidx[i],yidx[i],xidx[i]] = values[i]
+            elif method == 'MIN':
+                if values[i] < outgrid[zidx[i],yidx[i],xidx[i]]:
+                    outgrid[zidx[i],yidx[i],xidx[i]] = values[i]
         else:
             outgrid[zidx[i],yidx[i],xidx[i]] = values[i]
         cntgrid[zidx[i],yidx[i],xidx[i]] += 1
 
 
-def grid_rdbx_spherical(rdbx_fn, transform_fn, resolution, attribute='range', first_only=False):
+def grid_rdbx_cartesian(rdbx_list, transform_list, res, attribute='z', method='MAX', extent=[50,50], planefit=None):
+    """
+    Wrapper function to grid the REIGL point data on a cartesian grid
+    """
+    if isinstance(rdbx_list, str):
+        rdbx_list = [rdbx_list]
+        transform_list = [transform_list]
+    ncols = int( extent[0] // res + 1 )
+    nrows = int( extent[1] // res + 1 )
+    with RIEGLGrid(ncols, nrows, -extent[0]/2, extent[1]/2, resolution=res, init_cntgrid=True) as grd:    
+        for rdbx_fn,transform_fn in zip(rdbx_list,transform_list):
+            with riegl_io.RDBFile(rdbx_fn, transform_file=transform_fn) as rdb:
+                while rdb.point_count_current < rdb.point_count_total:
+                    rdb.read_next_chunk()
+                    if rdb.point_count > 0:
+                        xidx = (rdb.get_chunk('x') + extent[0]/2) // res
+                        yidx = (rdb.get_chunk('y') + extent[1]/2) // res
+                        if planefit is not None:
+                            vals = rdb.get_chunk('z') - (planefit['Parameters'][1] * rdb.get_chunk('x') +
+                                planefit['Parameters'][2] * rdb.get_chunk('y') + planefit['Parameters'][0]) 
+                        else:
+                            vals = rdb.get_chunk(attribute)
+                        valid = (xidx >= 0) & (xidx < ncols) & (yidx >= 0) & (yidx < nrows)
+                        grd.add_values(vals[valid], np.uint16(xidx[valid]), np.uint16(yidx[valid]), 
+                            0, method=method)
+        grd.finalize_grid(method=method)
+        scan_grid = grd.get_grid()
+    return scan_grid
+
+
+def grid_rxp_cartesian(rxp_list, transform_list, res, attribute='z', method='MAX', extent=[50,50], planefit=None):
+    """
+    Wrapper function to grid the REIGL pulse data on a cartesian grid
+    """
+    if isinstance(rxp_list, str):
+        rxp_list = [rxp_list]
+        transform_list = [transform_list]
+    ncols = int( extent[0] // res + 1 )
+    nrows = int( extent[1] // res + 1 )
+    with RIEGLGrid(ncols, nrows, -extent[0]/2, extent[1]/2, resolution=res, init_cntgrid=True) as grd:
+        for rxp_fn,transform_fn in zip(rxp_list,transform_list):
+            with riegl_io.RXPFile(rxp_fn, transform_file=transform_fn) as rxp:
+                if attribute in rxp.pulses:
+                    return_as_point_attribute = False
+                else:
+                    return_as_point_attribute = True
+                xidx = (rxp.get_data('x', return_as_point_attribute=return_as_point_attribute) + extent[0]/2) // res
+                yidx = (rxp.get_data('y', return_as_point_attribute=return_as_point_attribute) + extent[1]/2) // res
+                if planefit is not None:
+                    vals = rxp.get_data('z', return_as_point_attribute=return_as_point_attribute) - (planefit['Parameters'][0] + 
+                        planefit['Parameters'][1] * rxp.get_data('x', return_as_point_attribute=return_as_point_attribute) + 
+                        planefit['Parameters'][2] * rxp.get_data('y', return_as_point_attribute=return_as_point_attribute))
+                else:
+                    vals = rxp.get_data(attribute, return_as_point_attribute=return_as_point_attribute)
+                valid = (xidx >= 0) & (xidx < ncols) & (yidx >= 0) & (yidx < nrows)
+                grd.add_values(vals[valid], np.uint16(xidx[valid]), np.uint16(yidx[valid]), 
+                    0, method=method)
+        grd.finalize_grid(method=method) 
+        scan_grid = grd.get_grid()
+    return scan_grid
+
+
+def grid_rdbx_spherical(rdbx_fn, transform_fn, resolution, attribute='range', 
+    first_only=False, method='MEAN'):
     """
     Wrapper function to grid the REIGL point data on a spherical grid
     """
@@ -126,16 +196,18 @@ def grid_rdbx_spherical(rdbx_fn, transform_fn, resolution, attribute='range', fi
             while rdb.point_count_current < rdb.point_count_total:
                 rdb.read_next_chunk()
                 if rdb.point_count > 0:
-                    xidx = np.uint16(rdb.get_chunk('azimuth') // res)
-                    yidx = np.uint16(rdb.get_chunk('zenith') // res)
-                    vals = rdb.get_chunk('range')
-                    grd.add_values(vals, xidx, yidx, 0)
-            grd.finalize_grid()
+                    xidx = np.int16(rdb.get_chunk('azimuth') // res)
+                    yidx = np.int16(rdb.get_chunk('zenith') // res)
+                    vals = rdb.get_chunk(attribute)
+                    valid = (xidx >= 0) & (xidx < ncols) & (yidx >= 0) & (yidx < nrows)
+                    grd.add_values(vals[valid], xidx[valid], yidx[valid], 0, method=method)
+            grd.finalize_grid(method=method)
             scan_grid = grd.get_grid()
     return scan_grid
 
 
-def grid_rxp_spherical(rxp_fn, transform_fn, resolution, attribute='zenith'):
+def grid_rxp_spherical(rxp_fn, transform_fn, resolution, attribute='zenith', 
+    first_only=False, method='MEAN'):
     """
     Wrapper function to grid the REIGL pulse data on a spherical grid
     """
@@ -151,8 +223,13 @@ def grid_rxp_spherical(rxp_fn, transform_fn, resolution, attribute='zenith'):
             xidx = rxp.get_data('azimuth', return_as_point_attribute=return_as_point_attribute) // res
             yidx = rxp.get_data('zenith', return_as_point_attribute=return_as_point_attribute) // res
             vals = rxp.get_data(attribute, return_as_point_attribute=return_as_point_attribute)
-            grd.add_values(vals, np.uint16(xidx), np.uint16(yidx), 0)
-            grd.finalize_grid()
+            valid = (xidx >= 0) & (xidx < ncols) & (yidx >= 0) & (yidx < nrows)
+            if first_only:
+                index = rxp.get_data('target_index', return_as_point_attribute=return_as_point_attribute)
+                valid &= (index == 1)
+            grd.add_values(vals[valid], np.uint16(xidx[valid]), np.uint16(yidx[valid]), 
+                0, method=method)
+            grd.finalize_grid(method=method)
             scan_grid = grd.get_grid()
     return scan_grid
 

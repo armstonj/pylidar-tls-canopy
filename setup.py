@@ -66,7 +66,7 @@ if NO_INSTALL_CMDLINE:
     scriptList = None
 else:
     scriptList = ['bin/riegl_scangrid','bin/riegl_sphericalgrid',
-                  'bin/riegl_plantprofile']
+                  'bin/riegl_cartesiangrid','bin/riegl_plantprofile']
 
 # External modules        
 externalModules = []
