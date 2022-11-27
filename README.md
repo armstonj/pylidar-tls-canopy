@@ -15,3 +15,13 @@ To build and install:
 python setup.py build install
 ```
 
+See the Jupyter Notebooks for gridding and vertical profile examples.
+
+Run the following to see the arguments for command line scripts:
+```
+riegl_cartesiangrid -h
+riegl_scangrid -h
+riegl_sphericalgrid -h
+riegl_plantprofile -h
+```
+
