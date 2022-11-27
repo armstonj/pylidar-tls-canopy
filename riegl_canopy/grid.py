@@ -121,7 +121,8 @@ def add_by_idx(values, xidx, yidx, zidx, nodata, outgrid, cntgrid, method='SUM')
         cntgrid[zidx[i],yidx[i],xidx[i]] += 1
 
 
-def grid_rdbx_cartesian(rdbx_list, transform_list, res, attribute='z', method='MAX', extent=[50,50], planefit=None):
+def grid_rdbx_cartesian(rdbx_list, transform_list, res, attribute='z', method='MAX', extent=[50,50], 
+    ulc=[-25,25], planefit=None):
     """
     Wrapper function to grid the REIGL point data on a cartesian grid
     """
@@ -130,14 +131,14 @@ def grid_rdbx_cartesian(rdbx_list, transform_list, res, attribute='z', method='M
         transform_list = [transform_list]
     ncols = int( extent[0] // res + 1 )
     nrows = int( extent[1] // res + 1 )
-    with RIEGLGrid(ncols, nrows, -extent[0]/2, extent[1]/2, resolution=res, init_cntgrid=True) as grd:    
+    with RIEGLGrid(ncols, nrows, ulc[0], ulc[1], resolution=res, init_cntgrid=True) as grd:    
         for rdbx_fn,transform_fn in zip(rdbx_list,transform_list):
             with riegl_io.RDBFile(rdbx_fn, transform_file=transform_fn) as rdb:
                 while rdb.point_count_current < rdb.point_count_total:
                     rdb.read_next_chunk()
                     if rdb.point_count > 0:
-                        xidx = (rdb.get_chunk('x') + extent[0]/2) // res
-                        yidx = (rdb.get_chunk('y') + extent[1]/2) // res
+                        xidx = (rdb.get_chunk('x') - ulc[0]) // res
+                        yidx = (ulc[1] - rdb.get_chunk('y')) // res
                         if planefit is not None:
                             vals = rdb.get_chunk('z') - (planefit['Parameters'][1] * rdb.get_chunk('x') +
                                 planefit['Parameters'][2] * rdb.get_chunk('y') + planefit['Parameters'][0]) 
@@ -151,7 +152,8 @@ def grid_rdbx_cartesian(rdbx_list, transform_list, res, attribute='z', method='M
     return scan_grid
 
 
-def grid_rxp_cartesian(rxp_list, transform_list, res, attribute='z', method='MAX', extent=[50,50], planefit=None):
+def grid_rxp_cartesian(rxp_list, transform_list, res, attribute='z', method='MAX', extent=[50,50], 
+    ulc=[-25,25], planefit=None):
     """
     Wrapper function to grid the REIGL pulse data on a cartesian grid
     """
@@ -160,15 +162,15 @@ def grid_rxp_cartesian(rxp_list, transform_list, res, attribute='z', method='MAX
         transform_list = [transform_list]
     ncols = int( extent[0] // res + 1 )
     nrows = int( extent[1] // res + 1 )
-    with RIEGLGrid(ncols, nrows, -extent[0]/2, extent[1]/2, resolution=res, init_cntgrid=True) as grd:
+    with RIEGLGrid(ncols, nrows, ulc[0], ulc[1], resolution=res, init_cntgrid=True) as grd:
         for rxp_fn,transform_fn in zip(rxp_list,transform_list):
             with riegl_io.RXPFile(rxp_fn, transform_file=transform_fn) as rxp:
                 if attribute in rxp.pulses:
                     return_as_point_attribute = False
                 else:
                     return_as_point_attribute = True
-                xidx = (rxp.get_data('x', return_as_point_attribute=return_as_point_attribute) + extent[0]/2) // res
-                yidx = (rxp.get_data('y', return_as_point_attribute=return_as_point_attribute) + extent[1]/2) // res
+                xidx = (rxp.get_data('x', return_as_point_attribute=return_as_point_attribute) - ulc[0]) // res
+                yidx = (ulc[1] - rxp.get_data('y', return_as_point_attribute=return_as_point_attribute)) // res
                 if planefit is not None:
                     vals = rxp.get_data('z', return_as_point_attribute=return_as_point_attribute) - (planefit['Parameters'][0] + 
                         planefit['Parameters'][1] * rxp.get_data('x', return_as_point_attribute=return_as_point_attribute) + 

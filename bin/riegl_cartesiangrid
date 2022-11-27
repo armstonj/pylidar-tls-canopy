@@ -43,6 +43,8 @@ def get_args():
         help='Spatial resolution (meters)')
     argparser.add_argument('-e','--extent', metavar='FLOAT', type=float, default=[50,50], nargs=2,
         help='Spatial extent [X,Y] (meters)')
+    argparser.add_argument('-u','--ulc', metavar='FLOAT', type=float, default=[-25,25], nargs=2,
+        help='Upper left corner coordinate (meters)')
     argparser.add_argument('-p','--pose_file', metavar='FILE', type=str, nargs='+',
         help='Input RIEGL pose filenames (for RXP file processing if no transform_file')
     argparser.add_argument('-t','--transform_file', metavar='FILE', type=str,
@@ -74,8 +76,8 @@ if __name__ == "__main__":
                     while rdb.point_count_current < rdb.point_count_total:
                         rdb.read_next_chunk()
                         if rdb.point_count > 0:
-                            xidx = (rdb.get_chunk('x') + args.extent[0]/2) // args.resolution
-                            yidx = (rdb.get_chunk('y') + args.extent[1]/2) // args.resolution
+                            xidx = (rdb.get_chunk('x') - args.ulc[0]) // args.resolution
+                            yidx = (args.ulc[1] - rdb.get_chunk('y')) // args.resolution
                             vals = rdb.get_chunk(args.attribute)
                             valid = (xidx >= 0) & (xidx < ncols) & (yidx >= 0) & (yidx < nrows)
                             grd.add_values(vals[valid], np.uint16(xidx[valid]), np.uint16(yidx[valid]), 0, method=args.method)
@@ -86,8 +88,8 @@ if __name__ == "__main__":
                         return_as_point_attribute = False
                     else:
                         return_as_point_attribute = True
-                    xidx = (rxp.get_data('x', return_as_point_attribute=return_as_point_attribute) + args.extent[0]/2) // args.resolution
-                    yidx = (rxp.get_data('y', return_as_point_attribute=return_as_point_attribute) + args.extent[1]/2) // args.resolution
+                    xidx = (rxp.get_data('x', return_as_point_attribute=return_as_point_attribute) - args.ulc[0]) // args.resolution
+                    yidx = (args.ulc[1] - rxp.get_data('y', return_as_point_attribute=return_as_point_attribute)) // args.resolution
                     vals = rxp.get_data(attribute, return_as_point_attribute=return_as_point_attribute)
                     valid = (xidx >= 0) & (xidx < ncols) & (yidx >= 0) & (yidx < nrows)
                     grd.add_values(vals[valid], np.uint16(xidx[valid]), np.uint16(yidx[valid]), 0, method=args.method)
