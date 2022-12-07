@@ -6,7 +6,7 @@ The use of RIEGL proprietary formats require the environment variables RIVLIB_RO
 
 RiVLib (version >=2.6.0 required) and RDBLib (version >=2.4.0 required) can be downloaded from the RIEGL members area at http://www.riegl.com/members-area/software-downloads/libraries/
 
-You also need to install the Python API for RDBLib before building. Read the README.TXT file in the ```interface/python directory``` of your RDBLib installation.
+You also need to install the Python API for RDBLib before building. Read the README.TXT file in the ```interface/python``` directory of your RDBLib installation.
 
 This software also assumes RDBX files have been generated using RiScanPro version >= 2.15.
 
