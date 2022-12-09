@@ -1,6 +1,6 @@
 # riegl-tls-canopy
 
-This is a lite version of [pylidar canopy tools](http://www.pylidar.org/en/latest/commandline_canopy.html) specifically for gap probability modeling using data acquired by RIEGL VZ series and [LEAF](https://www.sensingsystems.com.au/) instruments.
+This is a lite version of [pylidar canopy tools](http://www.pylidar.org/en/latest/commandline_canopy.html) specifically for gap probability modeling using data acquired by [RIEGL VZ series](http://www.riegl.com/nc/products/terrestrial-scanning/) and [LEAF](https://www.sensingsystems.com.au/) instruments.
 
 The use of RIEGL proprietary formats require the environment variables RIVLIB_ROOT and RDBLIB_ROOT to be set to the root directory of your RiVLIB and RDBLib installations, respectively, before building.
 
