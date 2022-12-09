@@ -19,9 +19,9 @@ See the Jupyter Notebooks for gridding and vertical profile examples.
 
 Run the following to see the arguments for command line scripts:
 ```
-riegl_cartesiangrid -h
-riegl_scangrid -h
-riegl_sphericalgrid -h
-riegl_plantprofile -h
+pylidar_cartesiangrid -h
+pylidar_scangrid -h
+pylidar_sphericalgrid -h
+pylidar_plantprofile -h
 ```
 
