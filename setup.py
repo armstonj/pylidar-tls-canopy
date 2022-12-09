@@ -75,12 +75,12 @@ addRieglRXPDriver(externalModules, cxxFlags)
 if len(externalModules) == 0:
     raise SystemExit('No RIEGL libraries found - exiting install')
 
-setup(name='riegl_canopy',
+setup(name='pylidar_canopy',
       version='0.1',
-      packages=['riegl_canopy'],
+      packages=['pylidar_canopy'],
       scripts=scriptList,
       ext_modules=externalModules,
-      description='Tools for retriving canopy structure from RIEGL TLS measurements',
+      description='Tools for retriving canopy structure from RIEGL VZ and LEAF TLS measurements',
       classifiers=['Intended Audience :: Developers',
           'Operating System :: OS Independent',
           'Programming Language :: Python :: 3.5',
