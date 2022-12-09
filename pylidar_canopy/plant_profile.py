@@ -88,19 +88,19 @@ class Jupp2009:
         sum_by_index_2d(shot_cnt, z_idx, a_idx, self.shot_output)
 
     def add_scan_position(self, rxp_file, transform_file, planefit, rdbx_file=None,
-        method='WEIGHTED', min_zenith=5, max_zenith=70):
+        method='WEIGHTED', min_zenith=5, max_zenith=70, max_hr=None):
         """
         Add a scan position to the profile
         """
         if rdbx_file is None:
             self.add_scan_position_rxp(rxp_file, transform_file, planefit,
-                method=method, min_zenith=min_zenith, max_zenith=max_zenith)
+                method=method, min_zenith=min_zenith, max_zenith=max_zenith, max_hr=max_hr)
         else:
             self.add_scan_position_rdbx(rdbx_file, rxp_file, transform_file, planefit,
-                method=method, min_zenith=min_zenith, max_zenith=max_zenith)
+                method=method, min_zenith=min_zenith, max_zenith=max_zenith, max_hr=max_hr)
 
     def add_scan_position_rdbx(self, rdbx_file, rxp_file, transform_file, planefit,
-        method='WEIGHTED', min_zenith=5, max_zenith=70):
+        method='WEIGHTED', min_zenith=5, max_zenith=70, max_hr=None):
         """
         Add a scan position to the profile using rdbx
         """
@@ -124,6 +124,9 @@ class Jupp2009:
                     height = z - (planefit['Parameters'][1] * x +
                         planefit['Parameters'][2] * y + planefit['Parameters'][0])
                     idx = (zenith >= min_zenith_r) & (zenith < max_zenith_r)
+                    if max_hr is not None:
+                        hr = rdb.get_chunk('range') * np.sin(zenith)
+                        idx &= hr < max_hr
                     if np.any(idx):
                         self.add_targets(height[idx], index[idx], count[idx], zenith[idx],
                         azimuth[idx], method=method)
@@ -137,7 +140,7 @@ class Jupp2009:
                 self.add_shots(count[idx], zenith[idx], azimuth[idx], method=method)
 
     def add_scan_position_rxp(self, rxp_file, transform_file, planefit,
-        method='WEIGHTED', min_zenith=5, max_zenith=70):
+        method='WEIGHTED', min_zenith=5, max_zenith=70, max_hr=None):
         """
         Add a scan position to the profile using rxp
         VZ400 and/or pulse rate <=300 kHz only
@@ -157,6 +160,9 @@ class Jupp2009:
             height = z - (planefit['Parameters'][1] * x +
                 planefit['Parameters'][2] * y + planefit['Parameters'][0])
             idx = (zenith >= min_zenith_r) & (zenith < max_zenith_r)
+            if max_hr is not None:
+                hr = rxp.get_data('range') * np.sin(zenith)
+                idx &= hr < max_hr
             if np.any(idx):
                 self.add_targets(height[idx], index[idx], count[idx], zenith[idx],
                 azimuth[idx], method=method)
