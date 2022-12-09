@@ -65,8 +65,8 @@ NO_INSTALL_CMDLINE = int(os.getenv('GEDIPY_NOCMDLINE', '0')) > 0
 if NO_INSTALL_CMDLINE:
     scriptList = None
 else:
-    scriptList = ['bin/riegl_scangrid','bin/riegl_sphericalgrid',
-                  'bin/riegl_cartesiangrid','bin/riegl_plantprofile']
+    scriptList = ['bin/pylidar_scangrid','bin/pylidar_sphericalgrid',
+                  'bin/pylidar_cartesiangrid','bin/pylidar_plantprofile']
 
 # External modules        
 externalModules = []
