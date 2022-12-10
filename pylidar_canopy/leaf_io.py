@@ -79,6 +79,9 @@ class LeafScanFile:
             names=['sample_count','scan_encoder','rotary_encoder','range1',
                    'intensity1','range2','sample_time'])
 
+        if self.data.empty:
+            return
+
         self.data['target_count'] = 2 - (np.isnan(self.data['range1']).astype(int) +
             np.isnan(self.data['range2']).astype(int))
 
