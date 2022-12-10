@@ -87,19 +87,19 @@ class Jupp2009:
             sys.exit()
         sum_by_index_2d(shot_cnt, z_idx, a_idx, self.shot_output)
 
-    def add_scan_position(self, rxp_file, transform_file, planefit, rdbx_file=None,
+    def add_riegl_scan_position(self, rxp_file, transform_file, planefit, rdbx_file=None,
         method='WEIGHTED', min_zenith=5, max_zenith=70, max_hr=None):
         """
         Add a scan position to the profile
         """
         if rdbx_file is None:
-            self.add_scan_position_rxp(rxp_file, transform_file, planefit,
+            self.add_riegl_scan_position_rxp(rxp_file, transform_file, planefit,
                 method=method, min_zenith=min_zenith, max_zenith=max_zenith, max_hr=max_hr)
         else:
-            self.add_scan_position_rdbx(rdbx_file, rxp_file, transform_file, planefit,
+            self.add_riegl_scan_position_rdbx(rdbx_file, rxp_file, transform_file, planefit,
                 method=method, min_zenith=min_zenith, max_zenith=max_zenith, max_hr=max_hr)
 
-    def add_scan_position_rdbx(self, rdbx_file, rxp_file, transform_file, planefit,
+    def add_riegl_scan_position_rdbx(self, rdbx_file, rxp_file, transform_file, planefit,
         method='WEIGHTED', min_zenith=5, max_zenith=70, max_hr=None):
         """
         Add a scan position to the profile using rdbx
@@ -139,7 +139,7 @@ class Jupp2009:
             if np.any(idx):
                 self.add_shots(count[idx], zenith[idx], azimuth[idx], method=method)
 
-    def add_scan_position_rxp(self, rxp_file, transform_file, planefit,
+    def add_riegl_scan_position_rxp(self, rxp_file, transform_file, planefit,
         method='WEIGHTED', min_zenith=5, max_zenith=70, max_hr=None):
         """
         Add a scan position to the profile using rxp
@@ -174,6 +174,37 @@ class Jupp2009:
             idx = (zenith >= min_zenith_r) & (zenith < max_zenith_r)
             if np.any(idx):
                 self.add_shots(count[idx], zenith[idx], azimuth[idx], method=method)
+
+    def add_leaf_scan_position(self, leaf_file, method='WEIGHTED', min_zenith=5, 
+        max_zenith=70, sensor_height=None):
+        """
+        Add a leaf scan position to the profile
+        """
+        min_zenith_r = np.radians(min_zenith)
+        max_zenith_r = np.radians(max_zenith)
+
+        with leaf_io.LeafScanFile(leaf_file, sensor_height=sensor_height) as leaf:
+            if not leaf.data.empty:
+                # Point data
+                azimuth = leaf.data['azimuth'].to_numpy()
+                zenith = leaf.data['zenith'].to_numpy()
+                count = leaf.data['target_count'].to_numpy()
+                for n in (1,2):
+                    height = leaf.data[f'h{n:d}'].to_numpy()
+                    index = np.full(height.shape, n, dtype=np.uint8)
+                    idx = (zenith >= min_zenith_r) & (zenith < max_zenith_r) & ~np.isnan(height)
+                    if np.any(idx):
+                        self.add_targets(height[idx], index[idx], count[idx], zenith[idx],
+                        azimuth[idx], method=method)
+
+                # Pulse data
+                idx = (zenith >= min_zenith_r) & (zenith < max_zenith_r)
+                if np.any(idx):
+                    self.add_shots(count[idx], zenith[idx], azimuth[idx], method=method)
+
+                return True
+            else:
+                return False
 
     def get_pgap_theta_z(self, min_azimuth=0, max_azimuth=360, invert=False):
         """
