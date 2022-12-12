@@ -65,9 +65,10 @@ class Jupp2009:
             sum_by_index_3d(w, z_idx, a_idx, h_idx, self.target_output)
         elif method == 'FIRST':
             idx = (target_index == 1)
-            w = np.ones(np.count_nonzero(idx), dtype=np.float32)
-            sum_by_index_3d(w, z_idx[idx], a_idx[idx], h_idx[idx], 
-                self.target_output)
+            if np.any(idx):
+                w = np.ones(np.count_nonzero(idx), dtype=np.float32)
+                sum_by_index_3d(w, z_idx[idx], a_idx[idx], h_idx[idx], 
+                    self.target_output)
         else:
             print(f'{method} is not a recognized target weighting method')
             sys.exit()
@@ -184,6 +185,7 @@ class Jupp2009:
         max_zenith_r = np.radians(max_zenith)
 
         with leaf_io.LeafScanFile(leaf_file, sensor_height=sensor_height) as leaf:
+            self.datetime = leaf.datetime
             if not leaf.data.empty:
                 # Point data
                 azimuth = leaf.data['azimuth'].to_numpy()
@@ -259,7 +261,13 @@ class Jupp2009:
         """
         zenith_bin_r = np.radians(self.zenith_bin)
         hingeindex = np.argmin(np.abs(zenith_bin_r - np.arctan(np.pi / 2)))
-        pai = -1.1 * np.log(self.pgap_theta_z[hingeindex,:])
+        
+        pai_lim = np.log(1e-5)
+        tmp = np.full(self.pgap_theta_z.shape[1], pai_lim)
+        np.log(self.pgap_theta_z[hingeindex,:], out=tmp, 
+            where=self.pgap_theta_z[hingeindex,:] > 0)
+        
+        pai = -1.1 * tmp
 
         return pai
 

@@ -33,9 +33,9 @@ class LeafScanFile:
             self.azimuth_shots = int(fileinfo[7])
         else:
             print(f'{filename} is not a recognized LEAF scan file')
+        self.read_meta()
 
     def __enter__(self):
-        self.read_meta()
         self.read_data()
         return self
 
@@ -88,7 +88,7 @@ class LeafScanFile:
         self.data['datetime'] = [self.datetime + timedelta(milliseconds=s)
             for s in self.data['sample_time'].cumsum()]
 
-        self.data['zenith'] = (self.data['scan_encoder'] / 1e4 * 2 * np.pi) - np.pi
+        self.data['zenith'] = self.data['scan_encoder'] / 1e4 * 2 * np.pi
         self.data['azimuth'] = self.data['rotary_encoder'] / 2e4 * 2 * np.pi
 
         if transform:
@@ -97,6 +97,12 @@ class LeafScanFile:
             self.data['zenith'] += theta
             self.data['azimuth'] += phi
 
+        self.data['zenith'] = np.abs(self.data['zenith'] - np.pi)
+        idx = self.data['azimuth'] > (2 * np.pi)
+        self.data.loc[idx,'azimuth'] = self.data.loc[idx,'azimuth'] - (2 * np.pi)
+        idx = self.data['azimuth'] < 0
+        self.data.loc[idx,'azimuth'] = self.data.loc[idx,'azimuth'] + (2 * np.pi)
+ 
         for i,name in enumerate(['range1','range2']):
             n = i + 1
             x,y,z = rza2xyz(self.data[name], self.data['zenith'], self.data['azimuth'])
