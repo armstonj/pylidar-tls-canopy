@@ -221,7 +221,11 @@ class Jupp2009:
         idx = (self.azimuth_bin >= mina) & (self.azimuth_bin < maxa)
         if invert:
             idx = ~idx
-        cover_theta_z = np.nanmean(cover_theta_z[:,idx,:], axis=1)
+
+        if np.count_nonzero(idx) > 1:
+            cover_theta_z = np.nanmean(cover_theta_z[:,idx,:], axis=1)
+        else:
+            cover_theta_z = cover_theta_z[:,idx,:]
 
         self.pgap_theta_z = 1 - cover_theta_z 
 
