@@ -22,7 +22,7 @@ from . import leaf_io
 from . import RIO_DEFAULT_PROFILE
 
 
-class RIEGLGrid:
+class LidarGrid:
     def __init__(self, ncols, nrows, xmin, ymax, nvars=1, 
         resolution=1, init_cntgrid=False, profile=RIO_DEFAULT_PROFILE):
         self.profile = profile
@@ -132,7 +132,7 @@ def grid_rdbx_cartesian(rdbx_list, transform_list, res, attribute='z', method='M
         transform_list = [transform_list]
     ncols = int( extent[0] // res + 1 )
     nrows = int( extent[1] // res + 1 )
-    with RIEGLGrid(ncols, nrows, ulc[0], ulc[1], resolution=res, init_cntgrid=True) as grd:    
+    with LidarGrid(ncols, nrows, ulc[0], ulc[1], resolution=res, init_cntgrid=True) as grd:    
         for rdbx_fn,transform_fn in zip(rdbx_list,transform_list):
             with riegl_io.RDBFile(rdbx_fn, transform_file=transform_fn) as rdb:
                 while rdb.point_count_current < rdb.point_count_total:
@@ -163,7 +163,7 @@ def grid_rxp_cartesian(rxp_list, transform_list, res, attribute='z', method='MAX
         transform_list = [transform_list]
     ncols = int( extent[0] // res + 1 )
     nrows = int( extent[1] // res + 1 )
-    with RIEGLGrid(ncols, nrows, ulc[0], ulc[1], resolution=res, init_cntgrid=True) as grd:
+    with LidarGrid(ncols, nrows, ulc[0], ulc[1], resolution=res, init_cntgrid=True) as grd:
         for rxp_fn,transform_fn in zip(rxp_list,transform_list):
             with riegl_io.RXPFile(rxp_fn, transform_file=transform_fn) as rxp:
                 if attribute in rxp.pulses:
@@ -186,6 +186,28 @@ def grid_rxp_cartesian(rxp_list, transform_list, res, attribute='z', method='MAX
     return scan_grid
 
 
+def grid_leaf_spherical(leaf_fn, resolution, attribute='range',
+    method='MEAN', sensor_height=1.5):
+    """
+    Wrapper function to grid the LEAF point data on a spherical grid
+    """
+    res = np.radians(resolution)
+    ncols = int( (2 * np.pi) // res + 1 )
+    nrows = int( np.pi // res + 1 )
+    with leaf_io.LeafScanFile(leaf_fn, sensor_height=sensor_height) as leaf:
+        if leaf.data.empty:
+            return None
+        with LidarGrid(ncols, nrows, 0, np.pi, resolution=res, init_cntgrid=True) as grd:
+            xidx = np.int16(leaf.data.azimuth.to_numpy() // res)
+            yidx = np.int16(leaf.data.zenith.to_numpy() // res)
+            vals = leaf.data[attribute].to_numpy()
+            valid = (xidx >= 0) & (xidx < ncols) & (yidx >= 0) & (yidx < nrows)
+            grd.add_values(vals[valid], xidx[valid], yidx[valid], 0, method=method)
+            grd.finalize_grid(method=method)
+            scan_grid = grd.get_grid()
+    return scan_grid
+
+
 def grid_rdbx_spherical(rdbx_fn, transform_fn, resolution, attribute='range', 
     first_only=False, method='MEAN'):
     """
@@ -195,7 +217,7 @@ def grid_rdbx_spherical(rdbx_fn, transform_fn, resolution, attribute='range',
     ncols = int( (2 * np.pi) // res + 1 )
     nrows = int( np.pi // res + 1 )
     with riegl_io.RDBFile(rdbx_fn, transform_file=transform_fn, first_only=first_only) as rdb:
-        with RIEGLGrid(ncols, nrows, 0, np.pi, resolution=res, init_cntgrid=True) as grd:
+        with LidarGrid(ncols, nrows, 0, np.pi, resolution=res, init_cntgrid=True) as grd:
             while rdb.point_count_current < rdb.point_count_total:
                 rdb.read_next_chunk()
                 if rdb.point_count > 0:
@@ -222,7 +244,7 @@ def grid_rxp_spherical(rxp_fn, transform_fn, resolution, attribute='zenith',
             return_as_point_attribute = False
         else:
             return_as_point_attribute = True
-        with RIEGLGrid(ncols, nrows, 0, np.pi, resolution=res, init_cntgrid=True) as grd:
+        with LidarGrid(ncols, nrows, 0, np.pi, resolution=res, init_cntgrid=True) as grd:
             xidx = rxp.get_data('azimuth', return_as_point_attribute=return_as_point_attribute) // res
             yidx = rxp.get_data('zenith', return_as_point_attribute=return_as_point_attribute) // res
             vals = rxp.get_data(attribute, return_as_point_attribute=return_as_point_attribute)
@@ -242,7 +264,7 @@ def grid_rdbx_scan(rdbx_fn, transform_fn=None, attribute='reflectance'):
     Wrapper function to grid the REIGL point data on a scan grid
     """
     with riegl_io.RDBFile(rdbx_fn, chunk_size=100000, transform_file=transform_fn) as rdb:
-        with RIEGLGrid(rdb.maxc+1, rdb.maxr+1, 0, rdb.maxr, nvars=rdb.max_target_count) as grd:
+        with LidarGrid(rdb.maxc+1, rdb.maxr+1, 0, rdb.maxr, nvars=rdb.max_target_count) as grd:
             while rdb.point_count_current < rdb.point_count_total:
                 rdb.read_next_chunk()
                 if rdb.point_count > 0:
@@ -268,7 +290,7 @@ def grid_rxp_scan(rxp_fn, transform_fn=None, attribute='target_count'):
             return_as_point_attribute = True
             nvars = rxp.max_target_count
             zidx = rxp.get_data('target_index') - 1
-        with RIEGLGrid(rxp.maxc+1, rxp.maxr+1, 0, rxp.maxr, nvars=nvars) as grd:
+        with LidarGrid(rxp.maxc+1, rxp.maxr+1, 0, rxp.maxr, nvars=nvars) as grd:
             xidx = rxp.get_data('scanline', return_as_point_attribute=return_as_point_attribute)
             yidx = rxp.get_data('scanline_idx', return_as_point_attribute=return_as_point_attribute)
             vals = rxp.get_data(attribute, return_as_point_attribute=return_as_point_attribute)

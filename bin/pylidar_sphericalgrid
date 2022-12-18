@@ -75,7 +75,7 @@ if __name__ == "__main__":
             else:
                 nvars = 1
                 args.range_resolution = rdb.max_range
-            with grid.RIEGLGrid(ncols, nrows, 0, np.pi, nvars=nvars, resolution=res, init_cntgrid=True) as grd:
+            with grid.LidarGrid(ncols, nrows, 0, np.pi, nvars=nvars, resolution=res, init_cntgrid=True) as grd:
                 with tqdm(total=rdb.point_count_total) as pbar:
                     while rdb.point_count_current < rdb.point_count_total:
                         rdb.read_next_chunk()
@@ -105,7 +105,7 @@ if __name__ == "__main__":
                     nvars = 1
                     args.range_resolution = rxp.max_range
                 zidx = rxp.get_data('range')  // args.range_resolution
-            with grid.RIEGLGrid(ncols, nrows, 0, np.pi, nvars=nvars, resolution=res, init_cntgrid=True) as grd:
+            with grid.LidarGrid(ncols, nrows, 0, np.pi, nvars=nvars, resolution=res, init_cntgrid=True) as grd:
                 xidx = rxp.get_data('azimuth', return_as_point_attribute=return_as_point_attribute) // res
                 yidx = rxp.get_data('zenith', return_as_point_attribute=return_as_point_attribute) // res
                 vals = rxp.get_data(args.attribute, return_as_point_attribute=return_as_point_attribute)
@@ -115,5 +115,5 @@ if __name__ == "__main__":
                 grd.write_grid(args.output, descriptions=descriptions)
 
     else:
-        print(f'{args.input:} not a recognized RIEGL file')
+        print(f'{args.input:} not a recognized RIEGL or LEAF file')
 
