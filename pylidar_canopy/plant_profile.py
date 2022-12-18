@@ -10,6 +10,7 @@ October 2022
 """
 
 import sys
+import warnings
 import numpy as np
 import pandas as pd
 from numba import njit
@@ -222,10 +223,9 @@ class Jupp2009:
         if invert:
             idx = ~idx
 
-        if np.count_nonzero(idx) > 1:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=RuntimeWarning)
             cover_theta_z = np.nanmean(cover_theta_z[:,idx,:], axis=1)
-        else:
-            cover_theta_z = cover_theta_z[:,idx,:]
 
         self.pgap_theta_z = 1 - cover_theta_z 
 
