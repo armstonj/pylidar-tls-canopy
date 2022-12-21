@@ -61,6 +61,9 @@ class Jupp2009:
         if method == 'WEIGHTED':
             w = 1 / target_count
             sum_by_index_3d(w, z_idx, a_idx, h_idx, self.target_output)
+        elif method == 'FIRSTLAST':
+            w = np.full(target_count.shape[0], 0.5, dtype=np.float32)
+            sum_by_index_3d(w, z_idx, a_idx, h_idx, self.target_output)
         elif method == 'ALL':
             w = np.ones(target_height.shape[0], dtype=np.float32)
             sum_by_index_3d(w, z_idx, a_idx, h_idx, self.target_output)
@@ -80,7 +83,7 @@ class Jupp2009:
         """
         z_idx = np.int16((shot_zenith - self.min_z_r) // self.zres_r)
         a_idx = np.int16(shot_azimuth // self.ares_r)
-        if method in ('WEIGHTED','FIRST'):
+        if method in ('WEIGHTED','FIRST','FIRSTLAST'):
             shot_cnt = np.ones(target_count.shape[0], dtype=np.float32)
         elif method == 'ALL':
             shot_cnt = target_count.astype(np.float32)
@@ -226,7 +229,7 @@ class Jupp2009:
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', category=RuntimeWarning)
             cover_theta_z = np.nanmean(cover_theta_z[:,idx,:], axis=1)
-
+        
         self.pgap_theta_z = 1 - cover_theta_z 
 
     def calcLinearPlantProfiles(self):

@@ -59,7 +59,11 @@ class LeafScanFile:
                     else:
                         lparts = line.strip().split(':')
                         key = lparts[0][1::].strip()
-                        val = lparts[1].strip()
+                        if key in ('Batt','Curr','Lidar Temp','Motor Temp',
+                            'Encl. Temp','Encl. humidity'):
+                            val = lparts[1].strip().split()[0]
+                        else:
+                            val = lparts[1].strip()
                         try:
                             val = ast.literal_eval(val)
                         except:
@@ -140,7 +144,7 @@ class LeafPowerFile:
         """
         self.data = pd.read_csv(self.filename,
             names=['datetime','battery_voltage','current',
-                   'unknown1','unknown2'])
+                   'temperature','humidity'])
 
         self.data['datetime'] = pd.to_datetime(self.data['datetime'],
             format='%Y%m%d-%H%M%S')
