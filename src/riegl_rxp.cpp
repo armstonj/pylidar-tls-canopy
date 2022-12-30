@@ -5,7 +5,7 @@
  * This file is part of riegl_canopy
  * This file was part of pylidar (C) Sam Gillingham and John Armston
  * Modified for riegl_tools in 2021 by Sam Gillingham and Nick Goodwin
- * Modified for riegl_canopy in 2022 by John Armston
+ * Modified for pylidar-tls-canopy in 2022 by John Armston
  * 
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
