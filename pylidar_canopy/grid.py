@@ -73,6 +73,19 @@ class LidarGrid:
         add_by_idx(values, xidx, yidx, zidx, self.profile['nodata'], 
             self.outgrid, self.cntgrid, method=method)
 
+    def add_column(self, values, xidx, zidx=0, method='MEAN'):
+        """
+        Add a profile to indexed column on grid
+        """
+        yidx = np.arange(values.shape[0], dtype=int)
+        if np.isscalar(xidx):
+            xidx = np.full(values.shape[0], xidx, dtype=int)
+        if np.isscalar(zidx):
+            zidx = np.full(values.shape[0], zidx, dtype=int)
+        invalid = np.isnan(values) | (values == self.profile['nodata'])
+        add_by_idx(values, xidx[~invalid], yidx[~invalid], zidx[~invalid], 
+            self.profile['nodata'], self.outgrid, self.cntgrid, method=method)
+
     def finalize_grid(self, method='MEAN'):
         """
         Finalize grid
