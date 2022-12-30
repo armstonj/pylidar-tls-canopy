@@ -52,6 +52,7 @@ def rsmooth(y):
         + (-2 + 2 * np.cos(np.arange(0, n1) * np.pi / n1))[:, None]
     )
     W = np.ones((n1, n2))
+    W[np.isnan(W)] = 0
     z = zz = y
 
     def GCVscore(p):
