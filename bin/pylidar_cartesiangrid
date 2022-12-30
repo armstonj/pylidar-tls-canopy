@@ -95,7 +95,7 @@ if __name__ == "__main__":
                     grd.add_values(vals[valid], np.uint16(xidx[valid]), np.uint16(yidx[valid]), 0, method=args.method)
 
             else:
-                print(f'{fn} is not a recognized RIEGL or LEAF file')
+                print(f'{fn} is not a recognized RIEGL file')
                 sys.exit()
         
         grd.finalize_grid(method=args.method)

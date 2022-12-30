@@ -29,7 +29,7 @@ def get_args():
     argparser = argparse.ArgumentParser(description=DESCRIPTION, formatter_class=argparse.RawDescriptionHelpFormatter)
     argparser.add_argument('-r','--rxp_input', metavar='FILE', type=str, nargs='+',
         help='Input RIEGL rxp filenames (typically upright then tilt scans')
-    argparser.add_argument('-d','--rdbx_input', metavar='FILE', type=str, nargs='+',
+    argparser.add_argument('-d','--rdbx_input', metavar='FILE', type=str, nargs='+', default=None,
         help='Input RIEGL rdbx filenames (must match rxp filename order')
     argparser.add_argument('-o','--outfile', metavar='FILE', type=str, default=None,
         help='Output plant profile filename (CSV)')
@@ -51,6 +51,10 @@ def get_args():
         help='Minimum azimuth angle to use for input file')
     argparser.add_argument('--max_azimuth', metavar='FLOAT', type=float, default=None,
         help='Maximum azimuth angle to use for input file')
+    argparser.add_argument('--invert_azimuth', action='store_true', default=False,
+        help='Exclude rather than include specified azimuth angle range')
+    argparser.add_argument('--max_height', metavar='FLOAT', type=float, default=50,
+        help='Maximum height above ground to use for the vertical profile')
     argparser.add_argument('--grid_extent', metavar='FLOAT', type=float, default=60,
         help='Plane fit grid extent (m)')
     argparser.add_argument('--grid_resolution', metavar='FLOAT', type=float, default=10,
@@ -62,6 +66,9 @@ def get_args():
     argparser.add_argument('-m','--method', metavar='STR', type=str, default='WEIGHTED', choices=('WEIGHTED','FIRST','ALL'),
         help='Method for calculating Pgap from the point clouds')
     args = argparser.parse_args()
+
+    if args.rdbx_input is None:
+        args.rdbx_input = [None] * len(args.rxp_input)
 
     if args.outfile is None:
         args.outfile = 'plant_profiles.csv'
@@ -83,18 +90,18 @@ if __name__ == "__main__":
     min_zenith_r = np.radians(args.min_zenith)
     max_zenith_r = np.radians(args.max_zenith)
     vpp = plant_profile.Jupp2009(hres=args.height_resolution, zres=args.zenith_resolution, ares=args.azimuth_resolution, 
-        min_z=min(args.min_zenith), max_z=max(args.max_zenith), min_h=0, max_h=50) 
+        min_z=min(args.min_zenith), max_z=max(args.max_zenith), min_h=0, max_h=args.max_height) 
 
     # Read the data
     n_pos = len(args.transform_file)
     for i in range(n_pos):
         print(f'Reading scan position {i+1:d}')
-        vpp.add_scan_position(args.rdbx_input[i],args.rxp_input[i],args.transform_file[i], planefit,
-            method=args.method, min_zenith=args.min_zenith[i], max_zenith=args.max_zenith[i])
+        vpp.add_riegl_scan_position(args.rxp_file[i], args.transform_file[i], planefit, rdbx_file=args.rdbx_input[i],
+            method=args.method, min_zenith=args.min_zenith[i], max_zenith=args.max_zenith[i], max_hr=None)
 
     # Run and export the profiles
     print('Creating the vertical plant profiles')
-    vpp.get_pgap_theta_z(min_azimuth=args.min_azimuth, max_azimuth=args.max_azimuth)
+    vpp.get_pgap_theta_z(min_azimuth=args.min_azimuth, max_azimuth=args.max_azimuth, invert=self.invert_azimuth)
     vpp.exportPlantProfiles(outfile=args.outfile)
     if args.pgap_outfile is not None:
         vpp.exportPgapProfiles(outfile=args.pgap_outfile)

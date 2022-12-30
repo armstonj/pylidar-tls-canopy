@@ -115,5 +115,5 @@ if __name__ == "__main__":
                 grd.write_grid(args.output, descriptions=descriptions)
 
     else:
-        print(f'{args.input:} not a recognized RIEGL or LEAF file')
+        print(f'{args.input:} not a recognized RIEGL file')
 
