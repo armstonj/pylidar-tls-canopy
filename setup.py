@@ -80,12 +80,11 @@ setup(name='pylidar_canopy',
       packages=['pylidar_canopy'],
       scripts=scriptList,
       ext_modules=externalModules,
-      description='Tools for retriving canopy structure from RIEGL VZ and LEAF TLS measurements',
+      description='Tools for canopy gap probability modeling using RIEGL VZ and LEAF TLS measurements',
       classifiers=['Intended Audience :: Developers',
           'Operating System :: OS Independent',
-          'Programming Language :: Python :: 3.5',
-          'Programming Language :: Python :: 3.6',
           'Programming Language :: Python :: 3.7',
           'Programming Language :: Python :: 3.8',
-          'Programming Language :: Python :: 3.9'
+          'Programming Language :: Python :: 3.9',
+          'Programming Language :: Python :: 3.10'
           ])
