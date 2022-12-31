@@ -11,6 +11,8 @@ December 2022
 
 import sys
 import numpy as np
+
+import numba as nb
 from numba import njit
 
 import rasterio as rio
@@ -31,15 +33,15 @@ class VoxelGrid:
         self.nodata = nodata
         self.profile = profile
 
-        self.nx = (bounds[3] - bounds[0]) // voxelsize[0]
-        self.ny = (bounds[4] - bounds[1]) // voxelsize[1]
-        self.nz = (bounds[5] - bounds[2]) // voxelsize[2]
+        self.nx = int( (bounds[3] - bounds[0]) // voxelsize)
+        self.ny = int( (bounds[4] - bounds[1]) // voxelsize)
+        self.nz = int( (bounds[5] - bounds[2]) // voxelsize)
         
         self.voxdimx = bounds[3] - bounds[0]
         self.voxdimy = bounds[4] - bounds[1]
         self.voxdimz = bounds[5] - bounds[2]
         
-        self.nvox = self.nx * self.ny * self.nz
+        self.nvox = int(self.nx * self.ny * self.nz)
 
         self.profile.update(height=self.ny, width=self.nx, count=self.nz,
             transform=Affine(self.voxelsize, 0.0, self.bounds[0], 0.0,
@@ -51,15 +53,17 @@ class VoxelGrid:
         VZ400 and/or pulse rate <=300 kHz only
         """
         with riegl_io.RXPFile(rxp_file, transform_file=transform_file) as rxp:
-            self.x = rxp.get_data('x', return_point_by_pulse=True)
-            self.y = rxp.get_data('y', return_point_by_pulse=True)
-            self.z = rxp.get_data('z', return_point_by_pulse=True)
+            self.x = rxp.get_data('x', return_points_by_pulse=True)
+            self.y = rxp.get_data('y', return_points_by_pulse=True)
+            self.z = rxp.get_data('z', return_points_by_pulse=True)
+            
             self.count = rxp.get_data('target_count')
             self.azimuth = rxp.get_data('azimuth')
             self.zenith = rxp.get_data('zenith')
-            self.x0 = rxp.transform[0,4] 
-            self.y0 = rxp.transform[1,4]
-            self.z0 = rxp.transform[2,4]
+            
+            self.x0 = rxp.transform[3,0] 
+            self.y0 = rxp.transform[3,1]
+            self.z0 = rxp.transform[3,2]
 
     def voxelize_scan(self):
         """
@@ -72,9 +76,10 @@ class VoxelGrid:
 
         dx,dy,dz = self.get_direction_vector(self.zenith, self.azimuth)
 
+        bounds = nb.typed.List(self.bounds)
         run_traverse_voxels(self.x0, self.y0, self.z0, self.x, self.y, self.z, dx, dy, dz, self.count, 
             self.voxdimx, self.voxdimy, self.voxdimz, self.nx, self.ny, self.nz, 
-            self.bounds, self.voxelsize, hits, miss, occl, plen)
+            bounds, self.voxelsize, hits, miss, occl, plen)
 
         self.voxelgrids = {}
         nshots = hits + miss
@@ -147,16 +152,16 @@ def run_traverse_voxels(x0, y0, z0, x, y, z, dx, dy, dz, target_count, voxdimx, 
     Loop through each pulse and run voxel traversal
     """
     max_nreturns = np.max(target_count)
-    vox_idx = numpy.empty(max_nreturns, dtype=int)
-    for i in range(number_of_returns.shape[0]):        
+    vox_idx = np.empty(max_nreturns, dtype=np.uint32)
+    for i in range(target_count.shape[0]):        
         traverse_voxels(x0, y0, z0, x[:,i], y[:,i], z[:,i], dx[i], dy[i], dz[i],
             nx, ny, nz, voxdimx, voxdimy, voxdimz, bounds, voxelsize, target_count[i],
             hits, miss, occl, plen, vox_idx)
     
 
 @njit
-def traverse_voxels(x0, y0, z0, x1, y1, z1, dx, dy, dz, nX, nY, nZ, voxDimX, voxDimY, voxDimZ,
-                    bounds, voxelsize, target_count, hitsArr, missArr, occlArr, plenArr, voxIdx):
+def traverse_voxels(x0, y0, z0, x1, y1, z1, dx, dy, dz, nx, ny, nz, voxdimx, voxdimy, voxdimz,
+                    bounds, voxelsize, target_count, hits, miss, occl, plen, vox_idx):
     """
     A fast and simple voxel traversal algorithm through a 3D voxel space (J. Amanatides and A. Woo, 1987)
     Inputs:
@@ -169,10 +174,10 @@ def traverse_voxels(x0, y0, z0, x1, y1, z1, dx, dy, dz, nX, nY, nZ, voxDimX, vox
        number_of_returns
        voxIdx
     Outputs:
-       hitsArr
-       missArr
-       occlArr
-       plenArr
+       hits
+       miss
+       occl
+       plen
     """
     intersect, tmin, tmax = grid_intersection(x0, y0, z0, dx, dy, dz, bounds)    
     if intersect:
@@ -184,97 +189,97 @@ def traverse_voxels(x0, y0, z0, x1, y1, z1, dx, dy, dz, nX, nY, nZ, voxDimX, vox
         startY = y0 + tmin * dy
         startZ = z0 + tmin * dz
         
-        x = (startX - bounds[0]) // voxDimX * nX
-        y = (startY - bounds[1]) // voxDimY * nY
-        z = (startZ - bounds[2]) // voxDimZ * nZ               
+        x = int( (startX - bounds[0]) // voxdimx) * nx
+        y = int( (startY - bounds[1]) // voxdimy) * ny
+        z = int( (startZ - bounds[2]) // voxdimz) * nz               
         
-        for i in range(number_of_returns):
-            px = (x1[i] - bounds[0]) // voxDimX * nX
-            py = (y1[i] - bounds[1]) // voxDimY * nY
-            pz = (z1[i] - bounds[2]) // voxDimZ * nZ
-            voxIdx[i] = int(px + nX * py + nX * nY * pz)   
+        for i in range(target_count):
+            px = int( (x1[i] - bounds[0]) // voxdimx) * nx
+            py = int( (y1[i] - bounds[1]) // voxdimy) * ny
+            pz = int( (z1[i] - bounds[2]) // voxdimz) * nz
+            vox_idx[i] = int(px + nx * py + nx * ny * pz)   
         
-        if x == nX:
+        if x == nx:
             x -= 1
-        if y == nY:
+        if y == ny:
             y -= 1           
-        if z == nZ:
+        if z == nz:
             z -= 1
          
         if dx > 0:
-            tVoxelX = (x + 1) / nX
+            tVoxelX = (x + 1) / nx
             stepX = 1
         elif dx < 0:
-            tVoxelX = x / nX
+            tVoxelX = x / nx
             stepX = -1
         else:
-            tVoxelX = (x + 1) / nX
+            tVoxelX = (x + 1) / nx
             stepX = 0
         
         if dy > 0:
-            tVoxelY = (y + 1) / nY
+            tVoxelY = (y + 1) / ny
             stepY = 1
         elif dy < 0:
-            tVoxelY = y / nY
+            tVoxelY = y / ny
             stepY = -1
         else:
-            tVoxelY = (y + 1) / nY
+            tVoxelY = (y + 1) / ny
             stepY = 0  
         
         if dz > 0:
-            tVoxelZ = (z + 1) / nZ
+            tVoxelZ = (z + 1) / nz
             stepZ = 1
         elif dz < 0:
-            tVoxelZ = z / nZ
+            tVoxelZ = z / nz
             stepZ = -1
         else:
-            tVoxelZ = (z + 1) / nZ
+            tVoxelZ = (z + 1) / nz
             stepZ = 0            
         
-        voxelMaxX = bounds[0] + tVoxelX * voxDimX
-        voxelMaxY = bounds[1] + tVoxelY * voxDimY
-        voxelMaxZ = bounds[2] + tVoxelZ * voxDimZ
+        voxelMaxX = bounds[0] + tVoxelX * voxdimx
+        voxelMaxY = bounds[1] + tVoxelY * voxdimy
+        voxelMaxZ = bounds[2] + tVoxelZ * voxdimz
         
         if dx == 0:
             tMaxX = tmax
             tDeltaX = tmax
         else:
             tMaxX = tmin + (voxelMaxX - startX) / dx
-            tDeltaX = voxelSize[0] / abs(dx)
+            tDeltaX = voxelsize / abs(dx)
             
         if dy == 0:    
             tMaxY = tmax
             tDeltaY = tmax
         else:
             tMaxY = tmin + (voxelMaxY - startY) / dy
-            tDeltaY = voxelSize[1] / abs(dy)
+            tDeltaY = voxelsize / abs(dy)
             
         if dz == 0:
             tMaxZ = tmax
             tDeltaZ = tmax
         else:
             tMaxZ = tmin + (voxelMaxZ - startZ) / dz
-            tDeltaZ = voxelSize[2] / abs(dz)
+            tDeltaZ = voxelsize / abs(dz)
         
         wmiss = 1.0
         woccl = 0.0
-        if number_of_returns > 0:
-            w = 1.0 / number_of_returns
+        if target_count > 0:
+            w = 1.0 / target_count
         else:
             w = 0.0
         
-        while (x < nX) and (x >= 0) and (y < nY) and (y >= 0) and (z < nZ) and (z >= 0):
+        while (x < nx) and (x >= 0) and (y < ny) and (y >= 0) and (z < nz) and (z >= 0):
             
-            vidx = int(x + nX * y + nX * nY * z)
+            vidx = int(x + nx * y + nx * ny * z)
             
-            for i in range(number_of_returns):
-                if vidx == voxIdx[i]:
-                    hitsArr[vidx] += w
+            for i in range(target_count):
+                if vidx == vox_idx[i]:
+                    hits[vidx] += w
                     woccl += w
                     wmiss -= w
             
-            occlArr[vidx] += woccl
-            missArr[vidx] += wmiss 
+            occl[vidx] += woccl
+            miss[vidx] += wmiss 
                         
             if tMaxX < tMaxY:
                 if tMaxX < tMaxZ:
