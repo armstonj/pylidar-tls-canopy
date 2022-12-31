@@ -57,9 +57,9 @@ class VoxelGrid:
             self.count = rxp.get_data('target_count')
             self.azimuth = rxp.get_data('azimuth')
             self.zenith = rxp.get_data('zenith')
-            self.x0 = self.transform[0,4] 
-            self.y0 = self.transform[1,4]
-            self.z0 = self.transform[2,4]
+            self.x0 = rxp.transform[0,4] 
+            self.y0 = rxp.transform[1,4]
+            self.z0 = rxp.transform[2,4]
 
     def voxelize_scan(self):
         """
@@ -149,7 +149,7 @@ def run_traverse_voxels(x0, y0, z0, x, y, z, dx, dy, dz, target_count, voxdimx, 
     max_nreturns = np.max(target_count)
     vox_idx = numpy.empty(max_nreturns, dtype=int)
     for i in range(number_of_returns.shape[0]):        
-        traverse_voxels(x0[i], y0[i], z0[i], x[:,i], y[:,i], z[:,i], dx[i], dy[i], dz[i],
+        traverse_voxels(x0, y0, z0, x[:,i], y[:,i], z[:,i], dx[i], dy[i], dz[i],
             nx, ny, nz, voxdimx, voxdimy, voxdimz, bounds, voxelsize, target_count[i],
             hits, miss, occl, plen, vox_idx)
     
