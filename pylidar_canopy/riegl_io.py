@@ -16,6 +16,7 @@ import riegl_rxp
 import sys
 import json
 import numpy as np
+from numba import njit
 
 from . import DEFAULT_RDB_ATTRIBUTES
 from . import PRR_MAX_TARGETS 
@@ -81,7 +82,19 @@ class RXPFile:
             if name not in self.points:
                 self.points[name] = points[name]
 
-    def get_data(self, name, return_as_point_attribute=False):
+    def get_points_by_pulse(self, name):
+        """
+        Reshape data as a number of pulses by max_target_count array
+        """
+        new_shape = (self.pulses['pulse_id'].shape[0], self.max_target_count)
+        data = np.empty(new_shape, dtype=self.points[name].dtype)
+        idx = np.repeat(self.pulses['pulse_id'] - 1, self.pulses['target_count'])
+        for i in range(self.max_target_count):
+            j = self.points['target_index'] == i + 1
+            data[idx[j],i] = self.points[name][j]
+        return data
+
+    def get_data(self, name, return_as_point_attribute=False, return_points_by_pulse=False):
         """
         Get a pulse or point attribute
         """
@@ -92,8 +105,12 @@ class RXPFile:
                 data = np.repeat(data, self.pulses['target_count'])
                 valid = self.points['valid'] 
         elif name in self.points:
-            data = self.points[name]
-            valid = self.points['valid']
+            if return_points_by_pulse:
+                data = self.get_points_by_pulse(name)
+                valid = self.pulses['valid']
+            else:
+                data = self.points[name]
+                valid = self.points['valid']
         else:
             print(f'{name:} is not a pulse or point attribute')
             sys.exit()
@@ -201,6 +218,20 @@ class RDBFile:
         else:
             val =  self.rdb.point_attributes[key]
         return val
+
+
+@njit
+def get_rdbx_points_by_rxp_pulse(values, target_index, scanline, scanline_idx, 
+    pulse_id, pulse_scanline, pulse_scanline_idx, output):
+    """
+    Numba function to reorder rdbx sourced point data according to rxp sourced pulse data
+    """
+    for i in range(values.shape[0]):
+        match = (pulse_scanline == scanline[i]) & (pulse_scanline_idx == scanline_idx[i])
+        for j in np.nonzero(match):
+            p = pulse_id[j]
+            t = target_index[i] - 1
+            output[p,t] = values[i]
 
 
 def get_rdb_point_attributes(filename):
