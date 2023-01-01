@@ -9,7 +9,7 @@ The use of RIEGL proprietary formats requires the following environment variable
 You also need to install the Python API for RDBLib before building. A pip wheel is available in the RIEGL RDBLib download (read the README.TXT file in the ```interface/python``` directory of your RDBLib download).
 
 RiVLib (version >=2.6.0 required) and RDBLib (version >=2.4.0 required) can be downloaded from the RIEGL members area at http://www.riegl.com/members-area/software-downloads/libraries/. 
-If you don't have a RIEGL members area login, you can also find the appropriate RIEGL library downloads for your system [here](https://drive.google.com/drive/folders/1ORdOxGI23D_uB0f4iVsyvVCldk1zekle?usp=sharing). This link will disappear once this repository is made public.
+If you don't have a RIEGL members area login, you can also find the appropriate RIEGL library downloads for your system [here](https://drive.google.com/drive/folders/1ORdOxGI23D_uB0f4iVsyvVCldk1zekle?usp=sharing). This link will disappear once this repository is made public or merged with pylidar.
 
 This software also assumes RDBX files have been generated using RiScanPro version >= 2.15.
 
