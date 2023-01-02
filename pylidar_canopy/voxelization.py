@@ -27,26 +27,10 @@ class VoxelGrid:
     """
     Class for a voxel grid of a TLS scan
     """
-    def __init__(self, bounds, voxelsize, nodata=-9999, profile=RIO_DEFAULT_PROFILE):
-        self.bounds = bounds
-        self.voxelsize = voxelsize
+    def __init__(self, nodata=-9999, profile=RIO_DEFAULT_PROFILE):
         self.nodata = nodata
         self.profile = profile
-
-        self.nx = int( (bounds[3] - bounds[0]) // voxelsize)
-        self.ny = int( (bounds[4] - bounds[1]) // voxelsize)
-        self.nz = int( (bounds[5] - bounds[2]) // voxelsize)
-        
-        self.voxdimx = bounds[3] - bounds[0]
-        self.voxdimy = bounds[4] - bounds[1]
-        self.voxdimz = bounds[5] - bounds[2]
-        
-        self.nvox = int(self.nx * self.ny * self.nz)
-
-        self.profile.update(height=self.ny, width=self.nx, count=self.nz,
-            transform=Affine(self.voxelsize, 0.0, self.bounds[0], 0.0,
-            -self.voxelsize, self.bounds[4]), nodata=self.nodata)
-
+    
     def add_riegl_scan_position_rxp(self, rxp_file, transform_file):
         """
         Add a scan position using rxp
@@ -65,10 +49,32 @@ class VoxelGrid:
             self.y0 = rxp.transform[3,1]
             self.z0 = rxp.transform[3,2]
 
-    def voxelize_scan(self):
+    def _init_voxel_grid(self, bounds, voxelsize):
+        """
+        Initialize the voxel grid
+        """
+        self.bounds = nb.typed.List(bounds)
+        self.voxelsize = voxelsize
+
+        self.nx = int( (bounds[3] - bounds[0]) // voxelsize)
+        self.ny = int( (bounds[4] - bounds[1]) // voxelsize)
+        self.nz = int( (bounds[5] - bounds[2]) // voxelsize)
+
+        self.voxdimx = bounds[3] - bounds[0]
+        self.voxdimy = bounds[4] - bounds[1]
+        self.voxdimz = bounds[5] - bounds[2]
+
+        self.nvox = int(self.nx * self.ny * self.nz)
+
+        self.profile.update(height=self.ny, width=self.nx, count=self.nz,
+            transform=Affine(voxelsize, 0.0, bounds[0], 0.0,
+            -voxelsize, bounds[4]), nodata=self.nodata)
+
+    def voxelize_scan(self, bounds, voxelsize):
         """
         Voxelize the scan data
         """
+        self._init_voxel_grid(bounds, voxelsize)
         hits = np.zeros(self.nvox, dtype=float)
         miss = np.zeros(self.nvox, dtype=float)
         occl = np.zeros(self.nvox, dtype=float)
@@ -76,10 +82,9 @@ class VoxelGrid:
 
         dx,dy,dz = self.get_direction_vector(self.zenith, self.azimuth)
 
-        bounds = nb.typed.List(self.bounds)
         run_traverse_voxels(self.x0, self.y0, self.z0, self.x, self.y, self.z, dx, dy, dz, self.count, 
             self.voxdimx, self.voxdimy, self.voxdimz, self.nx, self.ny, self.nz, 
-            bounds, self.voxelsize, hits, miss, occl, plen)
+            self.bounds, self.voxelsize, hits, miss, occl, plen)
 
         self.voxelgrids = {}
         nshots = hits + miss
@@ -132,11 +137,12 @@ class VoxelGrid:
         """
         Write the results to file
         """
+        self.filenames = {}
         new_shape = (self.nz, self.ny, self.nx)
         for k in self.voxelgrids:
             with rio.Env():
-                filename = f'{prefix}_{k}.tif'
-                with rio.open(filename, 'w', **self.profile) as dst:
+                self.filenames[k] = f'{prefix}_{k}.tif'
+                with rio.open(self.filenames[k], 'w', **self.profile) as dst:
                     dst.write(self.voxelgrids[k].reshape(new_shape))
                     dst.build_overviews([2,4,8], Resampling.average)
                     for i in range(self.nz):
