@@ -68,7 +68,7 @@ class RXPFile:
         self.points = {}
         if self.transform is not None:
             xyz = np.vstack((points['x'], points['y'], points['z'])).T
-            xyz_t = apply_transformation(xyz, xyz.shape[0], self.transform)
+            xyz_t = apply_transformation(xyz, xyz.shape[0], self.transform, translate=True)
             self.points['x'] = xyz_t[:,0]
             self.points['y'] = xyz_t[:,1]
             self.points['z'] = xyz_t[:,2]
@@ -182,9 +182,9 @@ class RDBFile:
             self.point_count = self.query.next(self.chunk_size)
             if 'riegl_xyz' in self.points:
                 xyz_t = apply_transformation(self.points['riegl_xyz'], self.chunk_size, self.transform)
-                self.points['x'] = xyz_t[:,0]
-                self.points['y'] = xyz_t[:,1]
-                self.points['z'] = xyz_t[:,2]
+                self.points['x'] = xyz_t[:,0] + self.transform[3,0]
+                self.points['y'] = xyz_t[:,1] + self.transform[3,1]
+                self.points['z'] = xyz_t[:,2] + self.transform[3,2]
                 self.points['range'],self.points['zenith'],self.points['azimuth'] = xyz2rza(xyz_t[:,0], 
                     xyz_t[:,1], xyz_t[:,2])
             self.point_count_current += self.point_count
