@@ -27,27 +27,95 @@ class VoxelGrid:
     """
     Class for a voxel grid of a TLS scan
     """
-    def __init__(self, nodata=-9999, profile=RIO_DEFAULT_PROFILE):
+    def __init__(self, dtm_filename=None, nodata=-9999, profile=RIO_DEFAULT_PROFILE):
+        self.dtm_filename = dtm_filename
         self.nodata = nodata
         self.profile = profile
-    
-    def add_riegl_scan_position_rxp(self, rxp_file, transform_file):
+        if self.dtm_filename is not None:
+            self.load_dtm()
+
+    def load_dtm(self):
+        with rio.open(self.dtm_filename, 'r') as src:
+            self.dtm_data = src.read(1)
+            self.dtm_xmin = src.bounds.left
+            self.dtm_ymax = src.bounds.top
+            self.dtm_res = src.res[0]
+
+    def classify_ground(self, x, y, z, target_count, thres=0.25):
+        """
+        Classify points as ground (1) or canopy (0)
+        """
+        if self.dtm_filename is not None:
+            dtm_vals = extract_ground_by_pulse(x, y, target_count, self.dtm_data,
+                self.dtm_xmin, self.dtm_ymax, self.dtm_res, nodata=self.nodata)
+            self.ground = np.zeros(z.shape, dtype=bool)
+            np.less(z, dtm_vals + thres, out=self.ground, 
+                where=dtm_vals != self.nodata)
+        else:
+            self.ground = np.zeros(z.shape, dtype=bool)    
+
+    def add_riegl_scan_position(self, rxp_file, transform_file, rdbx_file=None):
+        """
+        Add a scan position using rdbx and rxp
+        """
+        if rdbx_file is None:
+            self.add_riegl_scan_position_rxp(rxp_file, transform_file, points=True)
+        else:
+            self.add_riegl_scan_position_rxp(rxp_file, transform_file, points=False)
+            self.add_riegl_scan_position_rdbx(rdbx_file, transform_file)
+
+        self.classify_ground(self.points['x'], self.points['y'],
+                    self.points['z'], self.count)
+
+    def add_riegl_scan_position_rdbx(self, rdbx_file, transform_file):
+        """
+        Add a scan position point data using rdbx
+        """
+        rdb_attributes = {'riegl.xyz': 'riegl_xyz','riegl.target_index': 'target_index',
+            'riegl.target_count': 'target_count', 'riegl.scan_line_index': 'scanline', 
+            'riegl.shot_index_line': 'scanline_idx'}
+        with riegl_io.RDBFile(rdbx_file, chunk_size=100000, attributes=rdb_attributes,
+            transform_file=transform_file) as rdb:
+
+            dtype_list = []
+            for name in ('x','y','z'):
+                dtype_list.append((str(name), '<f8', rdb.max_target_count))
+            npulses = self.count.shape[0]
+            self.points = np.empty(npulses, dtype=dtype_list)
+
+            while rdb.point_count_current < rdb.point_count_total:
+                rdb.read_next_chunk()
+                if rdb.point_count > 0:
+                    index = rdb.get_chunk('target_index')
+                    scanline = rdb.get_chunk('scanline')
+                    scanline_idx = rdb.get_chunk('scanline_idx')
+                    for name in ('x','y','z'):
+                        tmp = rdb.get_chunk(name)
+                        riegl_io.get_rdbx_points_by_rxp_pulse(tmp, index, scanline, scanline_idx,
+                            self.pulse_id, self.pulse_scanline, self.pulse_scanline_idx, self.points[name])
+
+    def add_riegl_scan_position_rxp(self, rxp_file, transform_file, points=True):
         """
         Add a scan position using rxp
         VZ400 and/or pulse rate <=300 kHz only
         """
         with riegl_io.RXPFile(rxp_file, transform_file=transform_file) as rxp:
-            self.x = rxp.get_data('x', return_points_by_pulse=True)
-            self.y = rxp.get_data('y', return_points_by_pulse=True)
-            self.z = rxp.get_data('z', return_points_by_pulse=True)
-            
             self.count = rxp.get_data('target_count')
-            self.azimuth = rxp.get_data('azimuth')
-            self.zenith = rxp.get_data('zenith')
+            
+            self.dx = rxp.get_data('beam_direction_x')
+            self.dy = rxp.get_data('beam_direction_y')
+            self.dz = rxp.get_data('beam_direction_z')
             
             self.x0 = rxp.transform[3,0] 
             self.y0 = rxp.transform[3,1]
             self.z0 = rxp.transform[3,2]
+
+            if points:
+                self.points = rxp.get_points_by_pulse(['x','y','z'])
+            else:
+                self.pulse_id = rxp.get_data('pulse_id')
+                self.pulse_scanline = rxp.get_data('scanline')
+                self.pulse_scanline_idx = rxp.get_data('scanline_idx')
 
     def _init_voxel_grid(self, bounds, voxelsize):
         """
@@ -78,33 +146,31 @@ class VoxelGrid:
         hits = np.zeros(self.nvox, dtype=float)
         miss = np.zeros(self.nvox, dtype=float)
         occl = np.zeros(self.nvox, dtype=float)
-        plen = np.ones(self.nvox, dtype=float)
+        zeni = np.zeros(self.nvox, dtype=float)
 
-        dx,dy,dz = self.get_direction_vector(self.zenith, self.azimuth)
-
-        run_traverse_voxels(self.x0, self.y0, self.z0, self.x, self.y, self.z, dx, dy, dz, self.count, 
-            self.voxdimx, self.voxdimy, self.voxdimz, self.nx, self.ny, self.nz, 
-            self.bounds, self.voxelsize, hits, miss, occl, plen)
+        run_traverse_voxels(self.x0, self.y0, self.z0, self.ground, self.points['x'].data, 
+            self.points['y'].data, self.points['z'].data, self.dx, self.dy, self.dz, 
+            self.count, self.voxdimx, self.voxdimy, self.voxdimz, self.nx, self.ny, 
+            self.nz, self.bounds, self.voxelsize, hits, miss, occl, zeni)
 
         self.voxelgrids = {}
         nshots = hits + miss
+        nbeams = nshots + occl
 
-        self.voxelgrids['vwts'] = np.zeros(self.nvox, dtype=float)
-        np.divide(nshots * plen, nshots + occl, out=self.voxelgrids['vwts'], where=nshots > 0)
+        self.voxelgrids['vwts'] = np.full(self.nvox, self.nodata, dtype=float)
+        np.divide(nshots, nbeams, out=self.voxelgrids['vwts'], where=nbeams > 0)
 
         self.voxelgrids['pgap'] = np.full(self.nvox, self.nodata, dtype=float)
         np.divide(miss, nshots, out=self.voxelgrids['pgap'], where=nshots > 0)
 
+        self.voxelgrids['zeni'] = np.full(self.nvox, self.nodata, dtype=float)
+        np.divide(zeni, nbeams, out=self.voxelgrids['zeni'], where=nbeams > 0)
+
         self.voxelgrids['vcls'] = self.classify_voxels(hits, miss, occl)
 
-    def get_direction_vector(self, zenith, azimuth):
-        """
-        Calculate the direction vector
-        """
-        dx = np.sin(zenith) * np.sin(azimuth)
-        dy = np.sin(zenith) * np.cos(azimuth)
-        dz = np.cos(zenith)
-        return dx,dy,dz
+        self.voxelgrids['hits'] = hits
+        self.voxelgrids['miss'] = miss
+        self.voxelgrids['occl'] = occl
 
     def classify_voxels(self, hits, miss, occl):
         """
@@ -117,7 +183,7 @@ class VoxelGrid:
         Unobserved  2       =0      =0       =0
         Ground      1
         """
-        classification = np.zeros_like(hits)
+        classification = np.full_like(hits, self.nodata)
 
         idx = (hits > 0) & (miss >= 0) & (occl >= 0)
         classification[idx] = 5
@@ -152,38 +218,51 @@ class VoxelGrid:
 
 
 @njit
-def run_traverse_voxels(x0, y0, z0, x, y, z, dx, dy, dz, target_count, voxdimx, voxdimy, voxdimz,
-                        nx, ny, nz, bounds, voxelsize, hits, miss, occl, plen):
+def extract_ground_by_pulse(x, y, target_count, data, xmin, ymax, binsize, nodata=-9999):
+    outdata = np.full(x.shape, nodata, dtype=data.dtype)
+    for i in range(target_count.shape[0]):
+        for j in range(target_count[i]):
+            col = int( (x[i,j] - xmin) // binsize )
+            row = int( (ymax - y[i,j]) // binsize )
+            if (row >= 0) & (col >= 0) & (row < data.shape[0]) & (col < data.shape[1]):
+                outdata[i,j] = data[row, col]
+    return outdata
+
+
+@njit
+def run_traverse_voxels(x0, y0, z0, gnd, x, y, z, dx, dy, dz, target_count, voxdimx, voxdimy, voxdimz,
+                        nx, ny, nz, bounds, voxelsize, hits, miss, occl, zeni):
     """
     Loop through each pulse and run voxel traversal
     """
     max_nreturns = np.max(target_count)
     vox_idx = np.empty(max_nreturns, dtype=np.uint32)
     for i in range(target_count.shape[0]):        
-        traverse_voxels(x0, y0, z0, x[:,i], y[:,i], z[:,i], dx[i], dy[i], dz[i],
+        traverse_voxels(x0, y0, z0, gnd[i,:], x[i,:], y[i,:], z[i,:], dx[i], dy[i], dz[i],
             nx, ny, nz, voxdimx, voxdimy, voxdimz, bounds, voxelsize, target_count[i],
-            hits, miss, occl, plen, vox_idx)
+            hits, miss, occl, zeni, vox_idx)
     
 
 @njit
-def traverse_voxels(x0, y0, z0, x1, y1, z1, dx, dy, dz, nx, ny, nz, voxdimx, voxdimy, voxdimz,
-                    bounds, voxelsize, target_count, hits, miss, occl, plen, vox_idx):
+def traverse_voxels(x0, y0, z0, gnd, x1, y1, z1, dx, dy, dz, nx, ny, nz, voxdimx, voxdimy, voxdimz,
+                    bounds, voxelsize, target_count, hits, miss, occl, zeni, vox_idx):
     """
     A fast and simple voxel traversal algorithm through a 3D voxel space (J. Amanatides and A. Woo, 1987)
     Inputs:
        x0, y0, z0
+       gnd
        x1, y1, z1
        dx, dy, dz
        nX, nY, nZ
        bounds
-       voxelSize
-       number_of_returns
-       voxIdx
+       voxelsize
+       target_count
+       vox_idx
     Outputs:
        hits
        miss
        occl
-       plen
+       zeni
     """
     intersect, tmin, tmax = grid_intersection(x0, y0, z0, dx, dy, dz, bounds)    
     if intersect:
@@ -194,15 +273,18 @@ def traverse_voxels(x0, y0, z0, x1, y1, z1, dx, dy, dz, nx, ny, nz, voxdimx, vox
         startX = x0 + tmin * dx
         startY = y0 + tmin * dy
         startZ = z0 + tmin * dz
+
+        r = np.sqrt(dx**2 + dy**2 + dz**2)
+        theta = np.arccos(dz / r)
         
-        x = int( (startX - bounds[0]) // voxdimx) * nx
-        y = int( (startY - bounds[1]) // voxdimy) * ny
-        z = int( (startZ - bounds[2]) // voxdimz) * nz               
+        x = np.floor( ((startX - bounds[0]) / voxdimx) * nx )
+        y = np.floor( ((startY - bounds[1]) / voxdimy) * ny )
+        z = np.floor( ((startZ - bounds[2]) / voxdimz) * nz )              
         
         for i in range(target_count):
-            px = int( (x1[i] - bounds[0]) // voxdimx) * nx
-            py = int( (y1[i] - bounds[1]) // voxdimy) * ny
-            pz = int( (z1[i] - bounds[2]) // voxdimz) * nz
+            px = np.floor( ((x1[i] - bounds[0]) / voxdimx) * nx )
+            py = np.floor( ((y1[i] - bounds[1]) / voxdimy) * ny )
+            pz = np.floor( ((z1[i] - bounds[2]) / voxdimz) * nz )
             vox_idx[i] = int(px + nx * py + nx * ny * pz)   
         
         if x == nx:
@@ -277,16 +359,17 @@ def traverse_voxels(x0, y0, z0, x1, y1, z1, dx, dy, dz, nx, ny, nz, voxdimx, vox
         while (x < nx) and (x >= 0) and (y < ny) and (y >= 0) and (z < nz) and (z >= 0):
             
             vidx = int(x + nx * y + nx * ny * z)
-            
+            zeni[vidx] += theta 
+
             for i in range(target_count):
-                if vidx == vox_idx[i]:
+                if (vidx == vox_idx[i]) and (gnd[i] == 0):
                     hits[vidx] += w
                     woccl += w
                     wmiss -= w
             
             occl[vidx] += woccl
-            miss[vidx] += wmiss 
-                        
+            miss[vidx] += wmiss
+             
             if tMaxX < tMaxY:
                 if tMaxX < tMaxZ:
                     x += stepX

@@ -60,18 +60,22 @@ class RXPFile:
         
         self.pulses = {}
         if self.transform is not None:
-            xyz = np.vstack((pulses['beam_direction_x'], pulses['beam_direction_y'], pulses['beam_direction_z'])).T
-            xyz_t = apply_transformation(xyz, xyz.shape[0], self.transform)
-            _, self.pulses['zenith'], self.pulses['azimuth'] = xyz2rza(xyz_t[:,0], xyz_t[:,1], xyz_t[:,2])
+            x_t,y_t,z_t = apply_transformation(pulses['beam_direction_x'], pulses['beam_direction_y'], 
+                pulses['beam_direction_z'], pulses['beam_direction_x'].shape[0], self.transform)
+            self.pulses['beam_direction_x'] = x_t
+            self.pulses['beam_direction_y'] = y_t
+            self.pulses['beam_direction_z'] = z_t
+            _, self.pulses['zenith'], self.pulses['azimuth'] = xyz2rza(x_t, y_t, z_t)
         self.pulses['valid'] = pulses['scanline'] >= 0
 
         self.points = {}
         if self.transform is not None:
             xyz = np.vstack((points['x'], points['y'], points['z'])).T
-            xyz_t = apply_transformation(xyz, xyz.shape[0], self.transform, translate=True)
-            self.points['x'] = xyz_t[:,0]
-            self.points['y'] = xyz_t[:,1]
-            self.points['z'] = xyz_t[:,2]
+            x_t,y_t,z_t = apply_transformation(points['x'], points['y'], points['z'], 
+                points['x'].shape[0], self.transform, translate=True)
+            self.points['x'] = x_t
+            self.points['y'] = y_t
+            self.points['z'] = z_t
         self.points['valid'] = np.repeat(pulses['scanline'], pulses['target_count']) >= 0
 
         for name in pulses.dtype.names:
@@ -82,35 +86,42 @@ class RXPFile:
             if name not in self.points:
                 self.points[name] = points[name]
 
-    def get_points_by_pulse(self, name):
+    def get_points_by_pulse(self, names):
         """
         Reshape data as a number of pulses by max_target_count array
+        Multiple point attributes are handled using a structured array
         """
-        new_shape = (self.pulses['pulse_id'].shape[0], self.max_target_count)
-        data = np.empty(new_shape, dtype=self.points[name].dtype)
-        idx = np.repeat(self.pulses['pulse_id'] - 1, self.pulses['target_count'])
+        dtype_list = []
+        for name in names:
+            t = self.points[name].dtype.str
+            dtype_list.append((str(name), t, self.max_target_count))
+        
+        pulse_id = np.repeat(self.pulses['pulse_id'] - 1, self.pulses['target_count'])
+        
+        npulses = self.pulses['pulse_id'].shape[0]
+        data = np.empty(npulses, dtype=dtype_list)
         for i in range(self.max_target_count):
-            j = self.points['target_index'] == i + 1
-            data[idx[j],i] = self.points[name][j]
-        return data
+            point_idx = self.points['target_index'] == i + 1
+            for name,t,s in dtype_list:
+                idx = pulse_id[point_idx]
+                data[name][idx,i] = self.points[name][point_idx]
 
-    def get_data(self, name, return_as_point_attribute=False, return_points_by_pulse=False):
+        return data[self.pulses['valid']]
+
+    def get_data(self, name, return_as_point_attribute=False):
         """
         Get a pulse or point attribute
         """
         if name in self.pulses:
-            data = self.pulses[name]
-            valid = self.pulses['valid']
             if return_as_point_attribute:
-                data = np.repeat(data, self.pulses['target_count'])
-                valid = self.points['valid'] 
-        elif name in self.points:
-            if return_points_by_pulse:
-                data = self.get_points_by_pulse(name)
-                valid = self.pulses['valid']
-            else:
-                data = self.points[name]
+                data = np.repeat(self.pulses[name], self.pulses['target_count'])
                 valid = self.points['valid']
+            else:
+                data = self.pulses[name]
+                valid = self.pulses['valid']
+        elif name in self.points:
+            data = self.points[name]
+            valid = self.points['valid']
         else:
             print(f'{name:} is not a pulse or point attribute')
             sys.exit()
@@ -181,12 +192,12 @@ class RDBFile:
         if self.point_count > 0:
             self.point_count = self.query.next(self.chunk_size)
             if 'riegl_xyz' in self.points:
-                xyz_t = apply_transformation(self.points['riegl_xyz'], self.chunk_size, self.transform)
-                self.points['x'] = xyz_t[:,0] + self.transform[3,0]
-                self.points['y'] = xyz_t[:,1] + self.transform[3,1]
-                self.points['z'] = xyz_t[:,2] + self.transform[3,2]
-                self.points['range'],self.points['zenith'],self.points['azimuth'] = xyz2rza(xyz_t[:,0], 
-                    xyz_t[:,1], xyz_t[:,2])
+                x_t,y_t,z_t = apply_transformation(self.points['riegl_xyz'][:,0], self.points['riegl_xyz'][:,1],
+                    self.points['riegl_xyz'][:,2], self.chunk_size, self.transform)
+                self.points['x'] = x_t + self.transform[3,0]
+                self.points['y'] = y_t + self.transform[3,1]
+                self.points['z'] = z_t + self.transform[3,2]
+                self.points['range'],self.points['zenith'],self.points['azimuth'] = xyz2rza(x_t, y_t, z_t)
             self.point_count_current += self.point_count
         else:
             self.point_count_total = self.point_count_current
@@ -283,11 +294,12 @@ def calc_transform_matrix(pitch, roll, yaw):
     return transform
 
 
-def apply_transformation(xyz, size, transform_matrix, translate=False):
+def apply_transformation(x, y, z, size, transform_matrix, translate=False):
     """
     Apply transformation
     d: apply transformation (1) or rotation only (0)
     """
+    xyz = np.vstack((x, y, z)).T
     if translate:
         t = np.ones((size,1))
     else:
@@ -296,7 +308,7 @@ def apply_transformation(xyz, size, transform_matrix, translate=False):
     xyz = np.concatenate((xyz, t), 1)
     xyz_t = np.dot(xyz, transform_matrix)
 
-    return xyz_t[:,0:3]
+    return xyz_t[:,0],xyz_t[:,1],xyz_t[:,2]
 
 
 def xyz2rza(x, y, z):
