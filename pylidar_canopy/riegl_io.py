@@ -231,18 +231,18 @@ class RDBFile:
         return val
 
 
-@njit
-def get_rdbx_points_by_rxp_pulse(values, target_index, scanline, scanline_idx, 
-    pulse_id, pulse_scanline, pulse_scanline_idx, output):
+def get_rdbx_points_by_rxp_pulse(values, target_index, scanline, scanline_idx,
+    pulse_scanline, pulse_scanline_idx, output):
     """
-    Numba function to reorder rdbx sourced point data according to rxp sourced pulse data
+    Function to reorder rdbx sourced point data according to rxp sourced pulse data
     """
-    for i in range(values.shape[0]):
-        match = (pulse_scanline == scanline[i]) & (pulse_scanline_idx == scanline_idx[i])
-        for j in np.nonzero(match):
-            p = pulse_id[j]
-            t = target_index[i] - 1
-            output[p,t] = values[i]
+    pulse_id_rxp = pulse_scanline * np.max(pulse_scanline_idx) + pulse_scanline_idx
+    pulse_id_rdb = scanline * np.max(pulse_scanline_idx) + scanline_idx
+    
+    pulse_sort_idx = np.argsort(pulse_id_rxp)
+    idx = np.searchsorted(pulse_id_rxp, pulse_id_rdb, sorter=pulse_sort_idx)
+    
+    output[idx,target_index-1] = values
 
 
 def get_rdb_point_attributes(filename):

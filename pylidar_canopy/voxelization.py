@@ -74,7 +74,7 @@ class VoxelGrid:
         rdb_attributes = {'riegl.xyz': 'riegl_xyz','riegl.target_index': 'target_index',
             'riegl.target_count': 'target_count', 'riegl.scan_line_index': 'scanline', 
             'riegl.shot_index_line': 'scanline_idx'}
-        with riegl_io.RDBFile(rdbx_file, chunk_size=100000, attributes=rdb_attributes,
+        with riegl_io.RDBFile(rdbx_file, chunk_size=10000000, attributes=rdb_attributes,
             transform_file=transform_file) as rdb:
 
             dtype_list = []
@@ -92,7 +92,7 @@ class VoxelGrid:
                     for name in ('x','y','z'):
                         tmp = rdb.get_chunk(name)
                         riegl_io.get_rdbx_points_by_rxp_pulse(tmp, index, scanline, scanline_idx,
-                            self.pulse_id, self.pulse_scanline, self.pulse_scanline_idx, self.points[name])
+                            self.pulse_scanline, self.pulse_scanline_idx, self.points[name])
 
     def add_riegl_scan_position_rxp(self, rxp_file, transform_file, points=True):
         """
@@ -113,7 +113,6 @@ class VoxelGrid:
             if points:
                 self.points = rxp.get_points_by_pulse(['x','y','z'])
             else:
-                self.pulse_id = rxp.get_data('pulse_id')
                 self.pulse_scanline = rxp.get_data('scanline')
                 self.pulse_scanline_idx = rxp.get_data('scanline_idx')
 
