@@ -96,7 +96,7 @@ if __name__ == "__main__":
     n_pos = len(args.transform_file)
     for i in range(n_pos):
         print(f'Reading scan position {i+1:d}')
-        vpp.add_riegl_scan_position(args.rxp_file[i], args.transform_file[i], planefit, rdbx_file=args.rdbx_input[i],
+        vpp.add_riegl_scan_position(args.rxp_input[i], args.transform_file[i], planefit, rdbx_file=args.rdbx_input[i],
             method=args.method, min_zenith=args.min_zenith[i], max_zenith=args.max_zenith[i], max_hr=None)
 
     # Run and export the profiles
