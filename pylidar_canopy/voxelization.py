@@ -10,6 +10,7 @@ December 2022
 """
 
 import sys
+import json
 import numpy as np
 
 import numba as nb
@@ -21,6 +22,52 @@ from affine import Affine
 
 from . import riegl_io
 from . import RIO_DEFAULT_PROFILE
+
+
+class VoxelModel:
+    """
+    Class for a voxel Pgap model using multiple TLS scans
+    """
+    def __init__(self, config_file):
+        self.config_file = config_file
+        self.load_config(config_file)
+
+    def load_config(self):
+        """
+        Load the VoxelModel configuration file
+        """
+        with open(self.config_file, 'r') as f:
+            self.config = json.load(f)
+
+    def read_voxelgrids(self):
+        """
+        Read all the data required to invert the Pgap model
+        """
+        self.nscans = None
+
+    def run_linear_model(self):
+        """
+        Run the linear model from Jupp et al. (2009) to get the
+        vertical and horizontal projected area
+        """
+        self.vpai = None
+        self.hpai = None
+
+    def get_cover_profile(self):
+        """
+        Get the vertical canopy cover profile using conditional probability
+        """
+        cover = np.zeros_like(self.vpai)
+        np.divide(self.vpai, self.config['res']**2, out=cover,
+            where=self.vpai != self.config['nodata'])
+
+        cover_z = np.zeros_like(cover)
+        for i in range(cover.shape[0]-1,-1,-1):
+            p_o = cover[i+1]
+            p_i = cover[i]
+            cover_z[i] = p_o + (1 - p_o) * p_i
+        
+        return cover_z
 
 
 class VoxelGrid:
@@ -54,7 +101,8 @@ class VoxelGrid:
         else:
             self.ground = np.zeros(z.shape, dtype=bool)    
 
-    def add_riegl_scan_position(self, rxp_file, transform_file, rdbx_file=None):
+    def add_riegl_scan_position(self, rxp_file, transform_file, rdbx_file=None, 
+        chunk_size=10000000):
         """
         Add a scan position using rdbx and rxp
         """
@@ -62,19 +110,19 @@ class VoxelGrid:
             self.add_riegl_scan_position_rxp(rxp_file, transform_file, points=True)
         else:
             self.add_riegl_scan_position_rxp(rxp_file, transform_file, points=False)
-            self.add_riegl_scan_position_rdbx(rdbx_file, transform_file)
+            self.add_riegl_scan_position_rdbx(rdbx_file, transform_file, chunk_size=chunk_size)
 
         self.classify_ground(self.points['x'], self.points['y'],
                     self.points['z'], self.count)
 
-    def add_riegl_scan_position_rdbx(self, rdbx_file, transform_file):
+    def add_riegl_scan_position_rdbx(self, rdbx_file, transform_file, chunk_size=10000000):
         """
         Add a scan position point data using rdbx
         """
         rdb_attributes = {'riegl.xyz': 'riegl_xyz','riegl.target_index': 'target_index',
             'riegl.target_count': 'target_count', 'riegl.scan_line_index': 'scanline', 
             'riegl.shot_index_line': 'scanline_idx'}
-        with riegl_io.RDBFile(rdbx_file, chunk_size=10000000, attributes=rdb_attributes,
+        with riegl_io.RDBFile(rdbx_file, chunk_size=chunk_size, attributes=rdb_attributes,
             transform_file=transform_file) as rdb:
 
             dtype_list = []
@@ -137,7 +185,7 @@ class VoxelGrid:
             transform=Affine(voxelsize, 0.0, bounds[0], 0.0,
             -voxelsize, bounds[4]), nodata=self.nodata)
 
-    def voxelize_scan(self, bounds, voxelsize):
+    def voxelize_scan(self, bounds, voxelsize, save_counts=True):
         """
         Voxelize the scan data
         """
@@ -167,9 +215,10 @@ class VoxelGrid:
 
         self.voxelgrids['vcls'] = self.classify_voxels(hits, miss, occl)
 
-        self.voxelgrids['hits'] = hits
-        self.voxelgrids['miss'] = miss
-        self.voxelgrids['occl'] = occl
+        if save_counts:
+            self.voxelgrids['hits'] = hits
+            self.voxelgrids['miss'] = miss
+            self.voxelgrids['occl'] = occl
 
     def classify_voxels(self, hits, miss, occl):
         """
