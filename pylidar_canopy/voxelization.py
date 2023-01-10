@@ -30,7 +30,7 @@ class VoxelModel:
     """
     def __init__(self, config_file):
         self.config_file = config_file
-        self.load_config(config_file)
+        self.load_config(self.config_file)
 
     def load_config(self):
         """
@@ -38,6 +38,7 @@ class VoxelModel:
         """
         with open(self.config_file, 'r') as f:
             self.config = json.load(f)
+        self.npos = len(self.config)
 
     def read_voxelgrids(self):
         """
@@ -74,9 +75,9 @@ class VoxelGrid:
     """
     Class for a voxel grid of a TLS scan
     """
-    def __init__(self, dtm_filename=None, nodata=-9999, profile=RIO_DEFAULT_PROFILE):
+    def __init__(self, dtm_filename=None, profile=RIO_DEFAULT_PROFILE):
         self.dtm_filename = dtm_filename
-        self.nodata = nodata
+        self.nodata = profile['nodata']
         self.profile = profile
         if self.dtm_filename is not None:
             self.load_dtm()
