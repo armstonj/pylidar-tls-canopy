@@ -219,7 +219,7 @@ class Jupp2009:
         cover_theta_z = np.full(self.target_output.shape, np.nan, dtype=float)
         np.divide(np.cumsum(self.target_output,axis=2), self.shot_output, out=cover_theta_z, 
             where=self.shot_output > 0)
-
+        
         mina = min_azimuth - self.ares / 2
         maxa = max_azimuth + self.ares / 2
         idx = (self.azimuth_bin >= mina) & (self.azimuth_bin < maxa)

@@ -47,9 +47,9 @@ def get_args():
         help='Minimum zenith angle to use for input file')
     argparser.add_argument('--max_zenith', metavar='FLOAT', type=float, default=None, nargs='+',
         help='Maximum zenith angle to use for input file')
-    argparser.add_argument('--min_azimuth', metavar='FLOAT', type=float, default=None, 
+    argparser.add_argument('--min_azimuth', metavar='FLOAT', type=float, default=0, 
         help='Minimum azimuth angle to use for input file')
-    argparser.add_argument('--max_azimuth', metavar='FLOAT', type=float, default=None,
+    argparser.add_argument('--max_azimuth', metavar='FLOAT', type=float, default=360,
         help='Maximum azimuth angle to use for input file')
     argparser.add_argument('--invert_azimuth', action='store_true', default=False,
         help='Exclude rather than include specified azimuth angle range')
@@ -101,7 +101,7 @@ if __name__ == "__main__":
 
     # Run and export the profiles
     print('Creating the vertical plant profiles')
-    vpp.get_pgap_theta_z(min_azimuth=args.min_azimuth, max_azimuth=args.max_azimuth, invert=self.invert_azimuth)
+    vpp.get_pgap_theta_z(min_azimuth=args.min_azimuth, max_azimuth=args.max_azimuth, invert=args.invert_azimuth)
     vpp.exportPlantProfiles(outfile=args.outfile)
     if args.pgap_outfile is not None:
         vpp.exportPgapProfiles(outfile=args.pgap_outfile)
