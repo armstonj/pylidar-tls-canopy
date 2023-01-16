@@ -30,7 +30,7 @@ class VoxelModel:
     """
     def __init__(self, config_file):
         self.config_file = config_file
-        self.load_config(self.config_file)
+        self.load_config()
 
     def load_config(self):
         """
@@ -50,10 +50,10 @@ class VoxelModel:
         sh = (self.npos, self.ny, self.nx)
         self.voxelgrids = {}
         for k in ('pgap','zeni','vwts'):
-            self.voxelgrids[k] = np.empty(sh, dtyepe=np.float32)
-            for p in self.positions:
+            self.voxelgrids[k] = np.empty(sh, dtype=np.float32)
+            for i,p in enumerate(self.positions):
                 with rio.open(self.positions[p][k],'r') as src:
-                    self.voxelgrids[k][p] = src.read(z+1)
+                    self.voxelgrids[k][i] = src.read(z+1)
 
     def run_linear_model(self, min_n=3):
         """
@@ -61,9 +61,9 @@ class VoxelModel:
         vertical and horizontal projected area
         """
         sh = (self.nz, self.ny, self.nx)
-        paiv = np.empty(sh, dtyepe=np.float32)
-        paih = np.empty(sh, dtyepe=np.float32)
-        nscans = np.empty(sh, dtyepe=np.uint8)
+        paiv = np.empty(sh, dtype=np.float32)
+        paih = np.empty(sh, dtype=np.float32)
+        nscans = np.empty(sh, dtype=np.uint8)
         for z in range(self.nz):
             zenith, pgap, weight = self.read_voxelgrids(z=z)
             nscans[i] = np.sum(weight > 0, axis=0, dtype=np.uint8)
