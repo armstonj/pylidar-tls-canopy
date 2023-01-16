@@ -35,32 +35,51 @@ class VoxelModel:
     def load_config(self):
         """
         Load the VoxelModel configuration file
+        nz,ny,nz,resolution,bounds,nodata,positions
         """
         with open(self.config_file, 'r') as f:
-            self.config = json.load(f)
-        self.npos = len(self.config)
+            config = json.load(f)
+            for k in config:
+                setattr(self, k, config[k])
+        self.npos = len(self.positions)
 
-    def read_voxelgrids(self):
+    def read_voxelgrids(self, z=0):
         """
         Read all the data required to invert the Pgap model
         """
-        self.nscans = None
+        sh = (self.npos, self.ny, self.nx)
+        self.voxelgrids = {}
+        for k in ('pgap','zeni','vwts'):
+            self.voxelgrids[k] = np.empty(sh, dtyepe=np.float32)
+            for p in self.positions:
+                with rio.open(self.positions[p][k],'r') as src:
+                    self.voxelgrids[k][p] = src.read(z+1)
 
-    def run_linear_model(self):
+    def run_linear_model(self, min_n=3):
         """
         Run the linear model from Jupp et al. (2009) to get the
         vertical and horizontal projected area
         """
-        self.vpai = None
-        self.hpai = None
+        sh = (self.nz, self.ny, self.nx)
+        paiv = np.empty(sh, dtyepe=np.float32)
+        paih = np.empty(sh, dtyepe=np.float32)
+        nscans = np.empty(sh, dtyepe=np.uint8)
+        for z in range(self.nz):
+            zenith, pgap, weight = self.read_voxelgrids(z=z)
+            nscans[i] = np.sum(weight > 0, axis=0, dtype=np.uint8)
+            paiv[i],paih[i] = run_linear_model_numba(self.voxelgrids['zeni'], 
+                self.voxelgrids['pgap'],self.voxelgrids['vwts'], 
+                null=self.nodata, min_n=min_n)
 
-    def get_cover_profile(self):
+        return paiv,paih,nscans        
+
+    def get_cover_profile(self, paiv):
         """
         Get the vertical canopy cover profile using conditional probability
         """
-        cover = np.zeros_like(self.vpai)
-        np.divide(self.vpai, self.config['res']**2, out=cover,
-            where=self.vpai != self.config['nodata'])
+        cover = np.zeros_like(paiv)
+        np.divide(paiv, self.resolution**2, out=cover,
+            where=paiv != self.nodata)
 
         cover_z = np.zeros_like(cover)
         for i in range(cover.shape[0]-1,-1,-1):
@@ -504,3 +523,47 @@ def grid_intersection(x0, y0, z0, dx, dy, dz, bounds):
             intersect = True
     
     return intersect,tmin,tmax
+
+
+@njit
+def run_linear_model_numba(zenith, pgap, weights, null=-9999, min_n=3):
+    """
+    Numba function to solve the linear model of Jupp et al. (2009)
+    across many voxels
+    """
+    sh = (pgap.shape[1],pgap.shape[2])
+    paiv = np.full(sh, null, dtype=np.float32)
+    paih = np.full(sh, null, dtype=np.float32)
+    
+    for x in range(pgap.shape[2]):
+        for y in range(pgap.shape[1]):
+
+            valid = ((zenith[:,y,x] != null) & 
+                     (pgap[:,y,x] != null) & 
+                     (weights[:,y,x] != null))
+            n = np.count_nonzero(valid)
+            if n >= min_n:
+
+                zenith_i = zenith[valid,y,x]
+                pgap_i = pgap[valid,y,x]
+                weights_i = weights[valid,y,x]
+
+                kthetal = np.full(n, np.log(1e-5), dtype=np.float32)
+                np.log(pgap_i, out=kthetal, where=pgap_i > 0)
+                xtheta = np.abs(2 * np.tan(zenith_i) / np.pi)
+                
+                A = np.c_[np.vstack([xtheta, np.ones(n)]).T * weights_i, weights_i]
+                B = weights_i * -kthetal
+                result,resid,rank,s = np.linalg.lstsq(A, B)
+                paiv[y,x] = result[0]
+                paih[y,x] = result[1]
+
+                if result[0] < 0:
+                    paih[y,x] = np.mean(-kthetal)
+                    paiv[y,x] = 0.0
+                if result[1] < 0:
+                    paiv[y,x] = np.mean(-kthetal / xtheta)
+                    paih[y,x] = 0.0
+    
+    return paiv,paih
+
