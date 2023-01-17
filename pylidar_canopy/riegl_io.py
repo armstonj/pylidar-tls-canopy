@@ -9,9 +9,11 @@ University of Maryland
 October 2022
 """
 
-import riegl.rdb
-
-import riegl_rxp
+try:
+    import riegl.rdb
+    import riegl_rxp
+except ImportError:
+    print('RIEGL libraries are not available')
 
 import sys
 import json

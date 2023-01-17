@@ -6,12 +6,14 @@ The use of RIEGL proprietary formats requires the following environment variable
   - RIVLIB_ROOT to the root directory of your unzipped RiVLIB download
   - PYLIDAR_CXX_FLAGS to -std=c++11
 
-You also need to install the Python API for RDBLib before building. A pip wheel is available in the RIEGL RDBLib download (read the README.TXT file in the ```interface/python``` directory of your RDBLib download).
+For processing of RIEGL data, you will also need to install the Python API for RDBLib before building. A pip wheel is available in the RIEGL RDBLib download (read the README.TXT file in the ```interface/python``` directory of your RDBLib download).
 
 RiVLib (version >=2.6.0 required) and RDBLib (version >=2.4.0 required) can be downloaded from the RIEGL members area at http://www.riegl.com/members-area/software-downloads/libraries/. 
 If you don't have a RIEGL members area login, you can also find the appropriate RIEGL library downloads for your system [here](https://drive.google.com/drive/folders/1ORdOxGI23D_uB0f4iVsyvVCldk1zekle?usp=sharing). This link will disappear once this repository is made public or merged with pylidar.
 
 This software also assumes RDBX files have been generated using RiScanPro version >= 2.15.
+
+pylidar-tls-canopy will install without REIGL libraries being available, but only the LEAF driver will be available.
 
 To build and install:
 ```
@@ -24,7 +26,7 @@ cd pylidar-tls-canopy
 conda env update -f environment.yml
 conda activate pylidar-tls-canopy
 ```
-Before creating the conda environment, you will need to edit the environment.yml file to modify the paths to the RDBLib pip wheel and the RiVLIB download root directory on your local system.
+Before creating the conda environment, you will need to edit the environment.yml file to modify the paths to the RDBLib pip wheel and the RiVLIB download root directory on your local system. If you are only installing pylidar-tls-canopy for analysis of LEAF data then simply remove these lines.
 
 See the Jupyter Notebooks for gridding, vertical profile and LEAF time-series analysis examples.
 

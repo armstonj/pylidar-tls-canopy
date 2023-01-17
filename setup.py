@@ -73,7 +73,8 @@ externalModules = []
 addRieglRXPDriver(externalModules, cxxFlags)
 
 if len(externalModules) == 0:
-    raise SystemExit('No RIEGL libraries found - exiting install')
+    print('No RIEGL libraries found. Only the LEAF driver will be available.')
+
 
 setup(name='pylidar_canopy',
       version='0.1',
