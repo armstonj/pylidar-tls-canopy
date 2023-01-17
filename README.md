@@ -13,7 +13,7 @@ If you don't have a RIEGL members area login, you can also find the appropriate 
 
 This software also assumes RDBX files have been generated using RiScanPro version >= 2.15.
 
-pylidar-tls-canopy will install without REIGL libraries being available, but only the LEAF driver will be available.
+pylidar-tls-canopy will install without REIGL libraries being available, but will then only work with LEAF data files.
 
 To build and install:
 ```
@@ -30,11 +30,11 @@ Before creating the conda environment, you will need to edit the environment.yml
 
 See the Jupyter Notebooks for gridding, vertical profile and LEAF time-series analysis examples.
 
-Run the following to see the arguments for command line scripts (currently only applicable to RIEGL data):
+Run the following to see the arguments for command line scripts:
 ```
 pylidar_cartesiangrid -h
 pylidar_scangrid -h
 pylidar_sphericalgrid -h
 pylidar_plantprofile -h
 ```
-
+All of these are applicable to RIEGL data. Only pylidar_plantprofile is applicable to LEAF data.
