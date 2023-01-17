@@ -64,9 +64,9 @@ class VoxelModel:
         paiv = np.empty(sh, dtype=np.float32)
         paih = np.empty(sh, dtype=np.float32)
         nscans = np.empty(sh, dtype=np.uint8)
-        for z in range(self.nz):
-            zenith, pgap, weight = self.read_voxelgrids(z=z)
-            nscans[i] = np.sum(weight > 0, axis=0, dtype=np.uint8)
+        for i in range(self.nz):
+            self.read_voxelgrids(z=i)
+            nscans[i] = np.sum(self.voxelgrids['vwts'] > 0, axis=0, dtype=np.uint8)
             paiv[i],paih[i] = run_linear_model_numba(self.voxelgrids['zeni'], 
                 self.voxelgrids['pgap'],self.voxelgrids['vwts'], 
                 null=self.nodata, min_n=min_n)
@@ -82,10 +82,9 @@ class VoxelModel:
             where=paiv != self.nodata)
 
         cover_z = np.zeros_like(cover)
-        for i in range(cover.shape[0]-1,-1,-1):
+        for i in range(cover.shape[0]-2,-1,-1):
             p_o = cover[i+1]
-            p_i = cover[i]
-            cover_z[i] = p_o + (1 - p_o) * p_i
+            cover_z[i] = p_o + (1 - p_o) * cover[i]
         
         return cover_z
 
@@ -549,11 +548,17 @@ def run_linear_model_numba(zenith, pgap, weights, null=-9999, min_n=3):
                 weights_i = weights[valid,y,x]
 
                 kthetal = np.full(n, np.log(1e-5), dtype=np.float32)
-                np.log(pgap_i, out=kthetal, where=pgap_i > 0)
+                for j in range(n):
+                    if pgap_i[j] > 0:
+                        kthetal[j] = np.log(pgap_i[j])
                 xtheta = np.abs(2 * np.tan(zenith_i) / np.pi)
+            
+                W = np.sqrt(np.diag(weights_i))
+                A = np.ones((n,2), dtype=np.float32)
+                A[:,1] = xtheta
+                A = np.dot(W, A)
+                B = np.dot(-kthetal,W)
                 
-                A = np.c_[np.vstack([xtheta, np.ones(n)]).T * weights_i, weights_i]
-                B = weights_i * -kthetal
                 result,resid,rank,s = np.linalg.lstsq(A, B)
                 paiv[y,x] = result[0]
                 paih[y,x] = result[1]
