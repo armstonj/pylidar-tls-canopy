@@ -320,7 +320,7 @@ class Jupp2009:
         """
         Write out the vertical plant profiles to file
         """
-        linear_pai,linear_mla = self.calcLinearPlantProfiles()
+        linear_pai,linear_mla = self.calcLinearPlantProfiles(calc_mla=True)
         plant_profiles = {'Height': self.height_bin,
                           'HingePAI': self.calcHingePlantProfiles(),
                           'LinearPAI': linear_pai,
