@@ -232,7 +232,7 @@ class Jupp2009:
         
         self.pgap_theta_z = 1 - cover_theta_z 
 
-    def calcLinearPlantProfiles(self):
+    def calcLinearPlantProfiles(self, calc_mla=False):
         """
         Calculate the linear model PAI (see Jupp et al., 2009)
         """
@@ -258,9 +258,11 @@ class Jupp2009:
                     paih[i] = 0.0
 
         pai = paiv + paih
-        mla = np.degrees( np.arctan2(paiv,paih) )
-        
-        return pai,mla
+        if calc_mla:
+            mla = np.degrees( np.arctan2(paiv,paih) )
+            return pai,mla
+        else:
+            return pai        
 
     def calcHingePlantProfiles(self):
         """
