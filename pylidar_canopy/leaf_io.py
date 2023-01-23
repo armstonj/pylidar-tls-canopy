@@ -51,7 +51,6 @@ class LeafScanFile:
             self.footer = {}
             in_header = True
             for line in f:
-                header = True
                 if line.startswith('#'):
                     if 'Finished' in line:
                         lparts = line.strip().split()
@@ -81,7 +80,7 @@ class LeafScanFile:
         """
         self.data = pd.read_csv(self.filename, comment='#', na_values=-1.0,
             names=['sample_count','scan_encoder','rotary_encoder','range1',
-                   'intensity1','range2','sample_time'])
+                   'intensity1','range2','sample_time'], on_bad_lines='warn')
 
         if self.data.empty:
             return
@@ -110,8 +109,7 @@ class LeafScanFile:
         self.data.loc[idx,'azimuth'] = self.data.loc[idx,'azimuth'] + (2 * np.pi)
         self.data['zenith'] = np.abs(self.data['zenith'] - np.pi)
 
-        for i,name in enumerate(['range1','range2']):
-            n = i + 1
+        for n,name in enumerate(['range1','range2'], start=1):
             x,y,z = rza2xyz(self.data[name], self.data['zenith'], self.data['azimuth'])
             self.data[f'x{n:d}'] = x
             self.data[f'y{n:d}'] = y
@@ -142,7 +140,7 @@ class LeafPowerFile:
         """
         Read file
         """
-        self.data = pd.read_csv(self.filename,
+        self.data = pd.read_csv(self.filename, on_bad_lines='warn',
             names=['datetime','battery_voltage','current',
                    'temperature','humidity'])
 
