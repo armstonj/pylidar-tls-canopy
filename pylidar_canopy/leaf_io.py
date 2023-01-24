@@ -85,6 +85,13 @@ class LeafScanFile:
         if self.data.empty:
             return
 
+        num_short_lines = self.data.shape[0] - self.data['sample_time'].count()
+        if num_short_lines > 0:
+            idx = np.isnan(self.data['sample_time'])
+            self.data = self.data.loc[~idx]
+            msg = f'{num_short_lines:d} truncated records were ignored in {self.filename}'
+            print(msg)
+            
         self.data['target_count'] = 2 - (np.isnan(self.data['range1']).astype(int) +
             np.isnan(self.data['range2']).astype(int))
 
