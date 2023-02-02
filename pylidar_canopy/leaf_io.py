@@ -87,11 +87,11 @@ class LeafScanFile:
 
         num_short_lines = self.data.shape[0] - self.data['sample_time'].count()
         if num_short_lines > 0:
-            idx = np.isnan(self.data['sample_time'])
-            self.data = self.data.loc[~idx]
+            idx = self.data['sample_time'].notna()
+            self.data = self.data.loc[idx]
             msg = f'{num_short_lines:d} truncated records were ignored in {self.filename}'
             print(msg)
-            
+           
         self.data['target_count'] = 2 - (np.isnan(self.data['range1']).astype(int) +
             np.isnan(self.data['range2']).astype(int))
 
@@ -150,6 +150,13 @@ class LeafPowerFile:
         self.data = pd.read_csv(self.filename, on_bad_lines='warn',
             names=['datetime','battery_voltage','current',
                    'temperature','humidity'])
+
+        num_short_lines = self.data.shape[0] - self.data['humidity'].count()
+        if num_short_lines > 0:
+            idx = self.data['humidity'].notna()
+            self.data = self.data.loc[idx]
+            msg = f'{num_short_lines:d} truncated records were ignored in {self.filename}'
+            print(msg)
 
         self.data['datetime'] = pd.to_datetime(self.data['datetime'],
             format='%Y%m%d-%H%M%S')
