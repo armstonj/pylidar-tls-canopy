@@ -72,8 +72,8 @@ def get_args():
         help='--input_file are LEAF instrument files')
     args = argparser.parse_args()
 
-    if args.rdbx_input is None:
-        args.rdbx_input = [None] * len(args.rxp_input)
+    if args.rdbx_input is None and not args.leaf:
+        args.rdbx_input = [None] * len(args.input_file)
 
     if args.outfile is None:
         args.outfile = 'plant_profiles.csv'
