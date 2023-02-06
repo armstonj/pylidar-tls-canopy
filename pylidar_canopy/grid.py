@@ -23,40 +23,41 @@ from . import RIO_DEFAULT_PROFILE
 
 
 class LidarGrid:
-    def __init__(self, ncols, nrows, xmin, ymax, nvars=1, 
-        resolution=1, init_cntgrid=False, profile=RIO_DEFAULT_PROFILE):
-        self.profile = profile
+    def __init__(self, ncols, nrows, xmin, ymax, count=1, nodata=-9999,
+        resolution=1, init_cntgrid=False):
         self.nrows = nrows
         self.ncols = ncols
         self.xmin = xmin
         self.ymax = ymax
-        self.nvars = nvars
+        self.count = count
+        self.nodata = nodata
         self.resolution = resolution
         self.init_cntgrid = init_cntgrid
+        self.init_grid()
 
     def __enter__(self):
-        self.init_grid(init_cntgrid=self.init_cntgrid, count=self.nvars)
         return self
 
     def __exit__(self, type, value, traceback):
         self.outgrid = None
 
-    def init_grid(self, **kwargs):
+    def init_grid(self, profile=RIO_DEFAULT_PROFILE, **kwargs):
         """
         Initialize output grid
         """
+        self.profile = profile
         self.profile.update(height=self.nrows, width=self.ncols,
             transform=Affine(self.resolution, 0.0, self.xmin, 0.0, 
-            -self.resolution, self.ymax))
+            -self.resolution, self.ymax), count=self.count, nodata=self.nodata)
 
         for key,value in kwargs.items():
             if key in self.profile:
                 self.profile[key] = value
 
-        self.outgrid = np.full((self.nvars,self.nrows,self.ncols), 
+        self.outgrid = np.full((self.count,self.nrows,self.ncols), 
             self.profile['nodata'], dtype=self.profile['dtype'])
         if self.init_cntgrid:
-            self.cntgrid = np.zeros((self.nvars,self.nrows,self.ncols), dtype=np.uint32)
+            self.cntgrid = np.zeros((self.count,self.nrows,self.ncols), dtype=np.uint32)
 
     def insert_values(self, values, xidx, yidx, zidx):
         """
@@ -91,7 +92,7 @@ class LidarGrid:
         Finalize grid
         """
         if method == 'MEAN':
-            tmp = np.full((self.nvars,self.nrows,self.ncols),
+            tmp = np.full((self.count,self.nrows,self.ncols),
                 self.profile['nodata'], dtype=self.profile['dtype'])
             np.divide(self.outgrid, self.cntgrid, out=tmp, where=self.cntgrid > 0, dtype=np.float32)
             self.outgrid = tmp
@@ -277,7 +278,7 @@ def grid_rdbx_scan(rdbx_fn, transform_fn=None, attribute='reflectance'):
     Wrapper function to grid the REIGL point data on a scan grid
     """
     with riegl_io.RDBFile(rdbx_fn, chunk_size=100000, transform_file=transform_fn) as rdb:
-        with LidarGrid(rdb.maxc+1, rdb.maxr+1, 0, rdb.maxr, nvars=rdb.max_target_count) as grd:
+        with LidarGrid(rdb.maxc+1, rdb.maxr+1, 0, rdb.maxr, count=rdb.max_target_count) as grd:
             while rdb.point_count_current < rdb.point_count_total:
                 rdb.read_next_chunk()
                 if rdb.point_count > 0:
@@ -303,7 +304,7 @@ def grid_rxp_scan(rxp_fn, transform_fn=None, attribute='target_count'):
             return_as_point_attribute = True
             nvars = rxp.max_target_count
             zidx = rxp.get_data('target_index') - 1
-        with LidarGrid(rxp.maxc+1, rxp.maxr+1, 0, rxp.maxr, nvars=nvars) as grd:
+        with LidarGrid(rxp.maxc+1, rxp.maxr+1, 0, rxp.maxr, count=nvars) as grd:
             xidx = rxp.get_data('scanline', return_as_point_attribute=return_as_point_attribute)
             yidx = rxp.get_data('scanline_idx', return_as_point_attribute=return_as_point_attribute)
             vals = rxp.get_data(attribute, return_as_point_attribute=return_as_point_attribute)

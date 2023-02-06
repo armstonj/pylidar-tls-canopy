@@ -35,9 +35,9 @@ class RXPFile:
             self.transform = calc_transform_matrix(pose['pitch'], pose['roll'], pose['yaw'])
         else:
             self.transform = None
+        self.read_file()
 
     def __enter__(self):
-        self.read_file()
         return self
 
     def __exit__(self, type, value, traceback):
@@ -143,9 +143,9 @@ class RDBFile:
             self.query_str = query_str
         self.transform_file = transform_file
         self.query = None
+        self.open_file()
 
     def __enter__(self):
-        self.open_file()
         return self
 
     def __exit__(self, type, value, traceback):
@@ -231,6 +231,25 @@ class RDBFile:
         else:
             val =  self.rdb.point_attributes[key]
         return val
+
+    def read_point_records(self):
+        """
+        Read the entire file into a structured array
+        """
+        rdb_attributes = {'riegl.target_index': 'target_index', 'riegl.target_count': 'target_count'}
+        points = {}
+        with riegl.rdb.rdb_open(self.filename) as rdb:
+            for riegl_points in rdb.select(chunk_size=self.point_count_total):
+                for k in rdb_attributes:
+                    points[rdb_attributes[k]] = riegl_points[k]
+                x_t,y_t,z_t = apply_transformation(riegl_points['riegl.xyz'][:,0], riegl_points['riegl.xyz'][:,1],
+                    riegl_points['riegl.xyz'][:,2], self.point_count_total, self.transform)
+                points['x'] = x_t + self.transform[3,0]
+                points['y'] = y_t + self.transform[3,1]
+                points['z'] = z_t + self.transform[3,2]
+                points['range'],points['zenith'],points['azimuth'] = xyz2rza(x_t, y_t, z_t)
+
+        return points
 
 
 def get_rdbx_points_by_rxp_pulse(values, target_index, scanline, scanline_idx,

@@ -26,7 +26,7 @@ class Jupp2009:
     Class for Foliage Profiles from Jupp 2009
     """
     def __init__(self, hres=0.5, zres=5, ares=45, min_z=0, max_z=70, 
-                 min_h=0, max_h=50):
+                 min_h=0, max_h=50, ground_plane=[0.0,0.0,0.0]):
         self.hres = hres
         self.zres = zres
         self.ares = ares
@@ -38,6 +38,8 @@ class Jupp2009:
         self.min_z_r = np.radians(min_z)
         self.zres_r = np.radians(zres)
         self.ares_r = np.radians(ares)
+
+        self.ground_plane = ground_plane
 
         self.height_bin = np.arange(self.min_h, self.max_h, self.hres)
         self.zenith_bin = np.arange(self.min_z, self.max_z, self.zres) + self.zres / 2
@@ -92,19 +94,19 @@ class Jupp2009:
             sys.exit()
         sum_by_index_2d(shot_cnt, z_idx, a_idx, self.shot_output)
 
-    def add_riegl_scan_position(self, rxp_file, transform_file, planefit, rdbx_file=None,
-        method='WEIGHTED', min_zenith=5, max_zenith=70, max_hr=None):
+    def add_riegl_scan_position(self, rxp_file, transform_file, rdbx_file=None,
+        method='WEIGHTED', min_zenith=5, max_zenith=70, max_hr=None, sensor_height=None):
         """
         Add a scan position to the profile
         """
         if rdbx_file is None:
-            self.add_riegl_scan_position_rxp(rxp_file, transform_file, planefit,
+            self.add_riegl_scan_position_rxp(rxp_file, transform_file, sensor_height=sensor_height,
                 method=method, min_zenith=min_zenith, max_zenith=max_zenith, max_hr=max_hr)
         else:
-            self.add_riegl_scan_position_rdbx(rdbx_file, rxp_file, transform_file, planefit,
+            self.add_riegl_scan_position_rdbx(rdbx_file, rxp_file, transform_file, sensor_height=sensor_height,
                 method=method, min_zenith=min_zenith, max_zenith=max_zenith, max_hr=max_hr)
 
-    def add_riegl_scan_position_rdbx(self, rdbx_file, rxp_file, transform_file, planefit,
+    def add_riegl_scan_position_rdbx(self, rdbx_file, rxp_file, transform_file, sensor_height=None,
         method='WEIGHTED', min_zenith=5, max_zenith=70, max_hr=None):
         """
         Add a scan position to the profile using rdbx
@@ -126,8 +128,12 @@ class Jupp2009:
                     x = rdb.get_chunk('x')
                     y = rdb.get_chunk('y')
                     z = rdb.get_chunk('z')
-                    height = z - (planefit['Parameters'][1] * x +
-                        planefit['Parameters'][2] * y + planefit['Parameters'][0])
+                    if sensor_height is not None:
+                        zoffset = rdb.transform[3,2] - sensor_height
+                    else:
+                        zoffset = self.ground_plane[0]
+                    height = z - (self.ground_plane[1] * x +
+                        self.ground_plane[2] * y + zoffset)
                     idx = (zenith >= min_zenith_r) & (zenith < max_zenith_r)
                     if max_hr is not None:
                         hr = rdb.get_chunk('range') * np.sin(zenith)
@@ -144,7 +150,7 @@ class Jupp2009:
             if np.any(idx):
                 self.add_shots(count[idx], zenith[idx], azimuth[idx], method=method)
 
-    def add_riegl_scan_position_rxp(self, rxp_file, transform_file, planefit,
+    def add_riegl_scan_position_rxp(self, rxp_file, transform_file, sensor_height=None,
         method='WEIGHTED', min_zenith=5, max_zenith=70, max_hr=None):
         """
         Add a scan position to the profile using rxp
@@ -162,8 +168,12 @@ class Jupp2009:
             x = rxp.get_data('x', return_as_point_attribute=True)
             y = rxp.get_data('y', return_as_point_attribute=True)
             z = rxp.get_data('z', return_as_point_attribute=True)
-            height = z - (planefit['Parameters'][1] * x +
-                planefit['Parameters'][2] * y + planefit['Parameters'][0])
+            if sensor_height is not None:
+                zoffset = rxp.transform[3,2] - sensor_height
+            else:
+                zoffset = self.ground_plane[0]
+            height = z - (self.ground_plane[1] * x +
+                self.ground_plane[2] * y + zoffset)
             idx = (zenith >= min_zenith_r) & (zenith < max_zenith_r)
             if max_hr is not None:
                 hr = rxp.get_data('range') * np.sin(zenith)
@@ -180,7 +190,50 @@ class Jupp2009:
             if np.any(idx):
                 self.add_shots(count[idx], zenith[idx], azimuth[idx], method=method)
 
-    def add_leaf_scan_position(self, leaf_file, method='WEIGHTED', min_zenith=5, 
+    def add_scan_file(self, fn, driver='RIEGL', transform_file=None, rdbx_fn=None,
+        method='WEIGHTED', min_zenith=5, max_zenith=70, sensor_height=None, max_hr=None):
+        """
+        Add a scan position to the profile
+        Placeholder function for pylidar data model
+        """
+        # Set constants
+        min_zenith_r = np.radians(min_zenith)
+        max_zenith_r = np.radians(max_zenith)
+        pulse_cols = ['zenith','azimuth','target_count']
+        point_cols = ['x','y','z','range','target_index',
+                      'zenith','azimuth','target_count']
+
+        # Read the point and pulse data
+        if driver == 'RIEGL':
+            pulses = None
+            points = None
+            height = points['z'] - (self.ground_plane[1] * points['x'] +
+                self.ground_plane[2] * points['y'] + self.ground_plane[0])
+        elif driver == 'LEAF':
+            pulses = None
+            points = None
+            height = points['z'] + sensor_height
+        else:
+            msg = f'{driver} driver not supported'
+            print(msg)
+
+        # Process the point data
+        idx = (points['zenith'] >= min_zenith_r) & (points['zenith'] < max_zenith_r)
+        if max_hr is not None:
+            hr = points['range'] * np.sin(points['zenith'])
+            idx &= hr < max_hr
+        if np.any(idx):
+            self.add_targets(height[idx], points['target_index'][idx], 
+                points['target_count'][idx], points['zenith'][idx],
+                points['azimuth'][idx], method=method)
+
+        # Process the pulse data
+        idx = (pulses['zenith'] >= min_zenith_r) & (pulses['zenith'] < max_zenith_r)
+        if np.any(idx):
+            self.add_shots(pulses['target_count'][idx], pulses['zenith'][idx], 
+                pulses['azimuth'][idx], method=method)
+
+    def add_leaf_scan_position(self, leaf_file, method='FIRSTLAST', min_zenith=5, 
         max_zenith=70, sensor_height=None):
         """
         Add a leaf scan position to the profile

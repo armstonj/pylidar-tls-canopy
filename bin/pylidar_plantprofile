@@ -28,9 +28,9 @@ def get_args():
     """
     argparser = argparse.ArgumentParser(description=DESCRIPTION, formatter_class=argparse.RawDescriptionHelpFormatter)
     argparser.add_argument('-i','--input_file', metavar='FILE', type=str, nargs='+',
-        help='Input RIEGL rxp filenames (typically upright then tilt scans or LEAF csv filename')
+        help='Input RIEGL rxp filenames (typically upright then tilt scans or LEAF csv filename)')
     argparser.add_argument('-d','--rdbx_input', metavar='FILE', type=str, nargs='+', default=None,
-        help='Input RIEGL rdbx filenames (must match rxp filename order')
+        help='Input RIEGL rdbx filenames (must match rxp filename order)')
     argparser.add_argument('-o','--outfile', metavar='FILE', type=str, default=None,
         help='Output plant profile filename (CSV)')
     argparser.add_argument('-p','--pgap_outfile', metavar='FILE', type=str, default=None,
@@ -62,7 +62,7 @@ def get_args():
     argparser.add_argument('-s','--sensor_height', metavar='FLOAT', type=float, default=1.6,
         help='Height above ground of LEAF sensor origin (m)')
     argparser.add_argument('-t','--transform_file', metavar='FILE', type=str, nargs='+',
-        help='Input RIEGL transform dat filename')
+        help='Input RIEGL transform dat filenames (must match rxp filename order)')
     argparser.add_argument('-R','--reportfile', metavar='FILE', type=str,
         help='Plane fitting report file')
     argparser.add_argument('-m','--method', metavar='STR', type=str, default='WEIGHTED', 
@@ -86,25 +86,28 @@ if __name__ == "__main__":
     args = get_args()
 
     # Get the ground plane
+    ground_plane = None
     if not args.leaf:
         print('Fitting the ground plane')
         x,y,z,r = plant_profile.get_min_z_grid(args.rdbx_input, args.transform_file, 
             args.grid_extent, args.grid_resolution)
         planefit = plant_profile.plane_fit_hubers(x, y, z, w=1/r, reportfile=args.reportfile)
+        ground_plane = planefit['Parameters']
 
     # Initialize the profile
     min_zenith_r = np.radians(args.min_zenith)
     max_zenith_r = np.radians(args.max_zenith)
     vpp = plant_profile.Jupp2009(hres=args.height_resolution, zres=args.zenith_resolution, ares=args.azimuth_resolution, 
-        min_z=min(args.min_zenith), max_z=max(args.max_zenith), min_h=0, max_h=args.max_height) 
+        min_z=min(args.min_zenith), max_z=max(args.max_zenith), min_h=0, max_h=args.max_height, ground_plane=ground_plane) 
 
     # Read the data
     n_pos = len(args.transform_file)
     for i in range(n_pos):
         print(f'Reading scan position {i+1:d}')
         if not args.leaf:
-            vpp.add_riegl_scan_position(args.input_file[i], args.transform_file[i], planefit, rdbx_file=args.rdbx_input[i],
-                method=args.method, min_zenith=args.min_zenith[i], max_zenith=args.max_zenith[i], max_hr=None)
+            vpp.add_riegl_scan_position(args.input_file[i], args.transform_file[i], rdbx_file=args.rdbx_input[i],
+                method=args.method, min_zenith=args.min_zenith[i], max_zenith=args.max_zenith[i], max_hr=None, 
+                sensor_height=args.sensor_height)
         else:
             vpp.add_leaf_scan_position(args.input_file[i], method=args.method, min_zenith=args.min_zenith[i],
                 max_zenith=args.max_zenith[i], sensor_height=args.sensor_height)
