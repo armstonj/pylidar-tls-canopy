@@ -26,9 +26,9 @@ cd pylidar-tls-canopy
 conda env update -f environment.yml
 conda activate pylidar-tls-canopy
 ```
-Before creating the conda environment, you will need to edit the environment.yml file to modify the paths to the RDBLib pip wheel and the RiVLIB download root directory on your local system. If you are only installing pylidar-tls-canopy for analysis of LEAF data then simply remove these lines.
+Before creating the conda environment, you will need to edit the environment.yml file to modify the paths to the RDBLib pip wheel and the RiVLIB download root directory on your local system. If you are only installing pylidar-tls-canopy for analysis of LEAF data then remove these lines.
 
-See the Jupyter Notebooks for gridding, vertical profile and LEAF time-series analysis examples.
+See the Jupyter Notebooks for RIEGL gridding, RIEGL vertical profile, LEAF time-series, and RIEGL voxel analysis examples.
 
 Run the following to see the arguments for command line scripts:
 ```

@@ -55,7 +55,7 @@ class VoxelModel:
                 with rio.open(self.positions[p][k],'r') as src:
                     self.voxelgrids[k][i] = src.read(z+1)
 
-    def run_linear_model(self, min_n=3):
+    def run_linear_model(self, min_n=3, weights=True):
         """
         Run the linear model from Jupp et al. (2009) to get the
         vertical and horizontal projected area
@@ -66,10 +66,13 @@ class VoxelModel:
         nscans = np.empty(sh, dtype=np.uint8)
         for i in range(self.nz):
             self.read_voxelgrids(z=i)
+            if weights:
+                w = self.voxelgrids['vwts']
+            else:
+                w = np.ones(self.voxelgrids['vwts'].shape, dtype=np.float32)
             nscans[i] = np.sum(self.voxelgrids['vwts'] > 0, axis=0, dtype=np.uint8)
             paiv[i],paih[i] = run_linear_model_numba(self.voxelgrids['zeni'], 
-                self.voxelgrids['pgap'],self.voxelgrids['vwts'], 
-                null=self.nodata, min_n=min_n)
+                self.voxelgrids['pgap'], w, null=self.nodata, min_n=min_n)
 
         return paiv,paih,nscans        
 
@@ -77,9 +80,11 @@ class VoxelModel:
         """
         Get the vertical canopy cover profile using conditional probability
         """
-        cover = np.zeros_like(paiv)
-        np.divide(paiv, self.resolution**2, out=cover,
-            where=paiv != self.nodata)
+        pgap = np.zeros_like(paiv)
+        np.exp(-paiv, out=pgap, where=paiv != self.nodata)        
+
+        cover = np.zeros_like(pgap)
+        np.subtract(1, pgap, out=cover, where=paiv != self.nodata)
 
         cover_z = np.zeros_like(cover)
         for i in range(cover.shape[0]-2,-1,-1):
