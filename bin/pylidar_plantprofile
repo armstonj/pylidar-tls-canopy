@@ -72,9 +72,6 @@ def get_args():
         help='--input_file are LEAF instrument files')
     args = argparser.parse_args()
 
-    if args.rdbx_input is None and not args.leaf:
-        args.rdbx_input = [None] * len(args.input_file)
-
     if args.outfile is None:
         args.outfile = 'plant_profiles.csv'
     
@@ -85,12 +82,19 @@ if __name__ == "__main__":
 
     args = get_args()
 
+    # Check if RDBX files are available
+    if args.rdbx_input is None:
+        args.rdbx_input = [None] * len(args.input_file)
+        rxp = True
+    else:
+        rxp = False
+
     # Get the ground plane
     ground_plane = None
     if not args.leaf:
         print('Fitting the ground plane')
-        x,y,z,r = plant_profile.get_min_z_grid(args.rdbx_input, args.transform_file, 
-            args.grid_extent, args.grid_resolution)
+        x,y,z,r = plant_profile.get_min_z_grid(args.rdbx_input, args.transform_file,
+            args.grid_extent, args.grid_resolution, rxp=rxp)
         planefit = plant_profile.plane_fit_hubers(x, y, z, w=1/r, reportfile=args.reportfile)
         ground_plane = planefit['Parameters']
 
