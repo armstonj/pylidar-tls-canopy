@@ -5,7 +5,7 @@ Install script for riegl_canopy
 import os
 import sys
 import ctypes
-from numpy.distutils.core import setup, Extension
+from setuptools import Extension,setup
 
 NUMPY_MACROS = ('NPY_NO_DEPRECATED_API', 'NPY_1_7_API_VERSION')
 
