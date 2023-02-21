@@ -28,9 +28,12 @@ class VoxelModel:
     """
     Class for a voxel Pgap model using multiple TLS scans
     """
-    def __init__(self, config_file):
+    def __init__(self, config_file, dtm_filename=None):
         self.config_file = config_file
         self.load_config()
+        self.dtm_filename = dtm_filename
+        if self.dtm is not None:
+            self.load_dtm()
 
     def load_config(self):
         """
@@ -42,6 +45,20 @@ class VoxelModel:
             for k in config:
                 setattr(self, k, config[k])
         self.npos = len(self.positions)
+
+    def load_dtm(self):
+        """
+        Load the DTM voxel grid
+        """
+        with rio.open(self.dtm, 'r') as src:
+            dtm_data = src.read(1)
+            dtm_xmin = src.bounds.left
+            dtm_ymax = src.bounds.top
+            dtm_res = src.res[0]
+
+        self.dtm_voxelgrid = create_ground_voxel_grid(self.nx, self.ny, self.nz,
+            self.bounds[3], self.bounds[4], self.bounds[4], self.resolution,
+            dtm_data, dtm_xmin, dtm_ymax, dtm_res)
 
     def read_voxelgrids(self, z=0):
         """
@@ -298,6 +315,25 @@ def extract_ground_by_pulse(x, y, target_count, data, xmin, ymax, binsize, nodat
             row = int( (ymax - y[i,j]) // binsize )
             if (row >= 0) & (col >= 0) & (row < data.shape[0]) & (col < data.shape[1]):
                 outdata[i,j] = data[row, col]
+    return outdata
+
+
+@njit
+def create_ground_voxel_grid(nx, ny, nz, xmin, ymax, zmin, binsize,
+    dem, dem_xmin, dem_ymax, dem_binsize):
+    outdata = np.zeros((nz,ny,nx), dtype=np.float32)
+    zval = zmin + np.arange(nz, dtype=np.float32) * binsize + binsize / 2
+    for z in range(nz):
+        for y in range(ny):
+            for x in range(nx):
+                xc = xmin + (x * binsize + binsize / 2)
+                yc = ymax - (y * binsize + binsize / 2)
+                dem_col = int( (xc - dem_xmin) // dem_binsize )
+                dem_row = int( (dem_ymax - yc) // dem_binsize )
+                if (dem_row >= 0) & (dem_col >= 0) & (dem_row < dem.shape[0]) & (dem_col < dem.shape[1]):
+                    dem_val = dem[dem_row, dem_col]
+                    if zval[z] < dem_val:
+                        outdata[z,y,x] = 1
     return outdata
 
 
