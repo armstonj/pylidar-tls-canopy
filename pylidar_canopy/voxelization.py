@@ -88,7 +88,7 @@ class VoxelModel:
 
         cover_z = np.zeros_like(cover)
         for i in range(cover.shape[0]-2,-1,-1):
-            p_o = cover[i+1]
+            p_o = cover_z[i+1]
             cover_z[i] = p_o + (1 - p_o) * cover[i]
         
         return cover_z

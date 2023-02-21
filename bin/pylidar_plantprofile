@@ -83,11 +83,10 @@ if __name__ == "__main__":
     args = get_args()
 
     # Check if RDBX files are available
+    rxp = False
     if args.rdbx_input is None:
         args.rdbx_input = [None] * len(args.input_file)
         rxp = True
-    else:
-        rxp = False
 
     # Get the ground plane
     ground_plane = None
