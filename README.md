@@ -13,7 +13,7 @@ If you don't have a RIEGL members area login, you can also find the appropriate 
 
 This software also assumes RDBX files have been generated using RiScanPro version >= 2.15.
 
-pylidar-tls-canopy will install without REIGL libraries being available, but will then only work with LEAF data files.
+pylidar-tls-canopy will install without RIEGL libraries being available, but will then only work with LEAF data files.
 
 To build and install:
 ```
