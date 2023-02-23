@@ -476,22 +476,7 @@ def traverse_voxels(x0, y0, z0, gnd, x1, y1, z1, dx, dy, dz, nx, ny, nz, voxdimx
             
             vidx = int(x + nx * y + nx * ny * z)
             zeni[vidx] += theta 
-            plen = np.sqrt(tDeltaX**2 + tDeltaY**2 + tDeltaZ**2)
-
-            hit = False
-            for i in range(target_count):
-                if (vidx == vox_idx[i]) and (gnd[i] == 0):
-                    hits[vidx] += w
-                    phit[vidx] += plen
-                    woccl += w
-                    wmiss -= w
-                    hit = True
             
-            occl[vidx] += woccl
-            miss[vidx] += wmiss
-            if not hit:
-                pmiss[vidx] += plen            
-
             if tMaxX < tMaxY:
                 if tMaxX < tMaxZ:
                     x += stepX
