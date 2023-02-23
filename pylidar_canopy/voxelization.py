@@ -235,18 +235,20 @@ class VoxelGrid:
         miss = np.zeros(self.nvox, dtype=float)
         occl = np.zeros(self.nvox, dtype=float)
         zeni = np.zeros(self.nvox, dtype=float)
+        phit = np.zeros(self.nvox, dtype=float)
+        pmiss = np.zeros(self.nvox, dtype=float)
 
         run_traverse_voxels(self.x0, self.y0, self.z0, self.ground, self.points['x'].data, 
             self.points['y'].data, self.points['z'].data, self.dx, self.dy, self.dz, 
             self.count, self.voxdimx, self.voxdimy, self.voxdimz, self.nx, self.ny, 
-            self.nz, self.bounds, self.voxelsize, hits, miss, occl, zeni)
+            self.nz, self.bounds, self.voxelsize, hits, miss, occl, zeni, phit, pmiss)
 
         self.voxelgrids = {}
         nshots = hits + miss
         nbeams = nshots + occl
 
         self.voxelgrids['vwts'] = np.full(self.nvox, self.nodata, dtype=float)
-        np.divide(nshots, nbeams, out=self.voxelgrids['vwts'], where=nbeams > 0)
+        np.add(phit, pmiss, out=self.voxelgrids['vwts'], where=nshots > 0)
 
         self.voxelgrids['pgap'] = np.full(self.nvox, self.nodata, dtype=float)
         np.divide(miss, nshots, out=self.voxelgrids['pgap'], where=nshots > 0)
@@ -260,6 +262,8 @@ class VoxelGrid:
             self.voxelgrids['hits'] = hits
             self.voxelgrids['miss'] = miss
             self.voxelgrids['occl'] = occl
+            self.voxelgrids['phit'] = phit
+            self.voxelgrids['pmiss'] = pmiss
 
     def classify_voxels(self, hits, miss, occl):
         """
@@ -339,7 +343,7 @@ def create_ground_voxel_grid(nx, ny, nz, xmin, ymax, zmin, binsize,
 
 @njit
 def run_traverse_voxels(x0, y0, z0, gnd, x, y, z, dx, dy, dz, target_count, voxdimx, voxdimy, voxdimz,
-                        nx, ny, nz, bounds, voxelsize, hits, miss, occl, zeni):
+                        nx, ny, nz, bounds, voxelsize, hits, miss, occl, zeni, phit, pmiss):
     """
     Loop through each pulse and run voxel traversal
     """
@@ -348,12 +352,12 @@ def run_traverse_voxels(x0, y0, z0, gnd, x, y, z, dx, dy, dz, target_count, voxd
     for i in range(target_count.shape[0]):        
         traverse_voxels(x0, y0, z0, gnd[i,:], x[i,:], y[i,:], z[i,:], dx[i], dy[i], dz[i],
             nx, ny, nz, voxdimx, voxdimy, voxdimz, bounds, voxelsize, target_count[i],
-            hits, miss, occl, zeni, vox_idx)
+            hits, miss, occl, zeni, phit, pmiss, vox_idx)
     
 
 @njit
 def traverse_voxels(x0, y0, z0, gnd, x1, y1, z1, dx, dy, dz, nx, ny, nz, voxdimx, voxdimy, voxdimz,
-                    bounds, voxelsize, target_count, hits, miss, occl, zeni, vox_idx):
+                    bounds, voxelsize, target_count, hits, miss, occl, zeni, phit, pmiss, vox_idx):
     """
     A fast and simple voxel traversal algorithm through a 3D voxel space (J. Amanatides and A. Woo, 1987)
     Inputs:
@@ -371,6 +375,8 @@ def traverse_voxels(x0, y0, z0, gnd, x1, y1, z1, dx, dy, dz, nx, ny, nz, voxdimx
        miss
        occl
        zeni
+       phit
+       pmiss
     """
     intersect, tmin, tmax = grid_intersection(x0, y0, z0, dx, dy, dz, bounds)    
     if intersect:
@@ -456,28 +462,36 @@ def traverse_voxels(x0, y0, z0, gnd, x1, y1, z1, dx, dy, dz, nx, ny, nz, voxdimx
         else:
             tMaxZ = tmin + (voxelMaxZ - startZ) / dz
             tDeltaZ = voxelsize / abs(dz)
-        
+
         wmiss = 1.0
         woccl = 0.0
         if target_count > 0:
             w = 1.0 / target_count
         else:
             w = 0.0
-        
+       
+        startR = np.sqrt(tMaxX**2 + tMaxY**2 + tMaxZ**2)
+ 
         while (x < nx) and (x >= 0) and (y < ny) and (y >= 0) and (z < nz) and (z >= 0):
             
             vidx = int(x + nx * y + nx * ny * z)
             zeni[vidx] += theta 
+            plen = np.sqrt(tDeltaX**2 + tDeltaY**2 + tDeltaZ**2)
 
+            hit = False
             for i in range(target_count):
                 if (vidx == vox_idx[i]) and (gnd[i] == 0):
                     hits[vidx] += w
+                    phit[vidx] += plen
                     woccl += w
                     wmiss -= w
+                    hit = True
             
             occl[vidx] += woccl
             miss[vidx] += wmiss
-             
+            if not hit:
+                pmiss[vidx] += plen            
+
             if tMaxX < tMaxY:
                 if tMaxX < tMaxZ:
                     x += stepX
@@ -492,6 +506,25 @@ def traverse_voxels(x0, y0, z0, gnd, x1, y1, z1, dx, dy, dz, nx, ny, nz, voxdimx
                 else:
                     z += stepZ
                     tMaxZ += tDeltaZ
+
+            endR = np.sqrt(tMaxX**2 + tMaxY**2 + tMaxZ**2)
+            plen = endR - startR
+
+            hit = False
+            for i in range(target_count):
+                if (vidx == vox_idx[i]) and (gnd[i] == 0):
+                    hits[vidx] += w
+                    phit[vidx] += plen
+                    woccl += w
+                    wmiss -= w
+                    hit = True
+
+            occl[vidx] += woccl
+            miss[vidx] += wmiss
+            if not hit:
+                pmiss[vidx] += plen
+
+            startR = endR
 
 
 @njit
