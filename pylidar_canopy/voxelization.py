@@ -210,7 +210,7 @@ class VoxelGrid:
         Initialize the voxel grid
         """
         self.bounds = nb.typed.List(bounds)
-        self.voxelsize = voxelsize
+        self.voxelsize = float(voxelsize)
 
         self.nx = int( (bounds[3] - bounds[0]) // voxelsize)
         self.ny = int( (bounds[4] - bounds[1]) // voxelsize)
@@ -455,7 +455,7 @@ def traverse_voxels(x0, y0, z0, gnd, x1, y1, z1, dx, dy, dz, nx, ny, nz, voxdimx
         else:
             tMaxY = tmin + (voxelMaxY - startY) / dy
             tDeltaY = voxelsize / abs(dy)
-            
+
         if dz == 0:
             tMaxZ = tmax
             tDeltaZ = tmax
@@ -470,8 +470,8 @@ def traverse_voxels(x0, y0, z0, gnd, x1, y1, z1, dx, dy, dz, nx, ny, nz, voxdimx
         else:
             w = 0.0
        
-        startR = np.sqrt(tMaxX**2 + tMaxY**2 + tMaxZ**2)
- 
+        startR = min(tMaxX, tMaxY, tMaxZ)
+
         while (x < nx) and (x >= 0) and (y < ny) and (y >= 0) and (z < nz) and (z >= 0):
             
             vidx = int(x + nx * y + nx * ny * z)
@@ -487,26 +487,30 @@ def traverse_voxels(x0, y0, z0, gnd, x1, y1, z1, dx, dy, dz, nx, ny, nz, voxdimx
             else:
                 if tMaxY < tMaxZ:
                     y += stepY
-                    tMaxY += tDeltaY           
+                    tMaxY += tDeltaY
                 else:
                     z += stepZ
                     tMaxZ += tDeltaZ
 
-            endR = np.sqrt(tMaxX**2 + tMaxY**2 + tMaxZ**2)
+            endR = min(tMaxX, tMaxY, tMaxZ)
             plen = endR - startR
 
-            hit = False
+            missed = False
             for i in range(target_count):
                 if (vidx == vox_idx[i]) and (gnd[i] == 0):
                     hits[vidx] += w
                     phit[vidx] += plen
                     woccl += w
                     wmiss -= w
-                    hit = True
+                elif (gnd[i] == 1):
+                    woccl += w
+                    wmiss -= w
+                else:
+                    missed = True
 
             occl[vidx] += woccl
             miss[vidx] += wmiss
-            if not hit:
+            if missed:
                 pmiss[vidx] += plen
 
             startR = endR
