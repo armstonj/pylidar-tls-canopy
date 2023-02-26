@@ -8,8 +8,8 @@ University of Maryland
 November 2022
 '''
 
-from pylidar_canopy import riegl_io
-from pylidar_canopy import grid
+from pylidar_tls_canopy import riegl_io
+from pylidar_tls_canopy import grid
 
 import os
 import sys

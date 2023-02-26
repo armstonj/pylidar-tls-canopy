@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 
 DESCRIPTION='''
-pylidar_canopy: Create a grid of the scan
+pylidar_tls_canopy: Create a grid of the scan
 
 John Armston
 University of Maryland
 October 2022
 '''
 
-from pylidar_canopy import riegl_io
-from pylidar_canopy import grid
+from pylidar_tls_canopy import riegl_io
+from pylidar_tls_canopy import grid
 
 import os
 import argparse
