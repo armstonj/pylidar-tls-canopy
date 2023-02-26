@@ -63,7 +63,11 @@ class LidarGrid:
         """
         Insert values to indexed location on grid
         """
-        self.outgrid[zidx,yidx,xidx] = values
+        if np.isscalar(zidx):
+            zidx = np.full(yidx.shape, zidx, dtype=yidx.dtype)
+        i = (xidx >= 0) & (yidx >= 0) & (zidx >= 0)
+        i &= (xidx < self.outgrid.shape[2]) & (yidx < self.outgrid.shape[1]) & (zidx < self.outgrid.shape[0]) 
+        self.outgrid[zidx[i],yidx[i],xidx[i]] = values[i]
 
     def add_values(self, values, xidx, yidx, zidx, method='MEAN'):
         """
@@ -71,7 +75,11 @@ class LidarGrid:
         """
         if np.isscalar(zidx):
             zidx = np.full(yidx.shape, zidx, dtype=yidx.dtype)
-        add_by_idx(values, xidx, yidx, zidx, self.profile['nodata'], 
+
+        i = (xidx >= 0) & (yidx >= 0) & (zidx >= 0)
+        i &= (xidx < self.outgrid.shape[2]) & (yidx < self.outgrid.shape[1]) & (zidx < self.outgrid.shape[0])
+
+        add_by_idx(values[i], xidx[i], yidx[i], zidx[i], self.profile['nodata'], 
             self.outgrid, self.cntgrid, method=method)
 
     def add_column(self, values, xidx, zidx=0, method='MEAN'):
@@ -84,6 +92,7 @@ class LidarGrid:
         if np.isscalar(zidx):
             zidx = np.full(values.shape[0], zidx, dtype=int)
         invalid = np.isnan(values) | (values == self.profile['nodata'])
+        invalid &= (xidx < 0) | (xidx >= self.outgrid.shape[2]) 
         add_by_idx(values, xidx[~invalid], yidx[~invalid], zidx[~invalid], 
             self.profile['nodata'], self.outgrid, self.cntgrid, method=method)
 
