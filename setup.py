@@ -5,6 +5,7 @@ Install script for riegl_canopy
 import os
 import sys
 import ctypes
+import pylidar_tls_canopy
 from setuptools import Extension,setup
 
 NUMPY_MACROS = ('NPY_NO_DEPRECATED_API', 'NPY_1_7_API_VERSION')
@@ -76,10 +77,13 @@ if len(externalModules) == 0:
     print('No RIEGL libraries found. Only the LEAF driver will be available.')
 
 
-setup(name='pylidar_canopy',
-      version='0.1',
-      packages=['pylidar_canopy'],
+setup(name='pylidar-tls-canopy',
+      version=pylidar_tls_canopy.__version__,
+      author='John Armston',
+      author_email='armston@umd.edu',
+      packages=['pylidar_tls_canopy'],
       scripts=scriptList,
+      ext_package='pylidar_tls_canopy',
       ext_modules=externalModules,
       description='Tools for canopy gap probability modeling using RIEGL VZ and LEAF TLS measurements',
       classifiers=['Intended Audience :: Developers',

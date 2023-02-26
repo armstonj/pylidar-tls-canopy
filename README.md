@@ -18,7 +18,7 @@ pylidar-tls-canopy will install without RIEGL libraries being available, but wil
 To build and install:
 ```
 cd pylidar-tls-canopy
-python -m pip install .
+pip install .
 ```
 
 Alternatively, you can create a conda environment for pylidar-tls-canopy using the provided environment.yml file:
