@@ -5,9 +5,6 @@ Main module
 # This file is part of pylidar_tls_canopy
 # Copyright (C) 2022
 
-from os import path
-package_dir = path.abspath(path.dirname(__file__))
-
 PYLIDAR_TLS_CANOPY_VERSION = '0.2'
 __version__ = PYLIDAR_TLS_CANOPY_VERSION
 
