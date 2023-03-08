@@ -19,9 +19,10 @@ import pandas as pd
 
 
 class LeafScanFile:
-    def __init__(self, filename, sensor_height=None):
+    def __init__(self, filename, sensor_height=None, transform=True):
         self.filename = filename
         self.sensor_height = sensor_height
+        self.transform = transform
         pattern = re.compile(r'(\w{8})_(\d{4})_(hemi|hinge|ground)_(\d{8})-(\d{6})Z_(\d{4})_(\d{4})\.csv')
         fileinfo = pattern.fullmatch( os.path.basename(filename) )
         if fileinfo:
@@ -74,7 +75,7 @@ class LeafScanFile:
                 else:
                     in_header = False
 
-    def read_data(self, transform=True):
+    def read_data(self):
         """
         Read file
         """
