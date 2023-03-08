@@ -5,7 +5,7 @@ The Source Code
 
 There are no source code bundle releases yet. To install pylidar-tls-canopy from the source code, you need to have cloned the repository.
 At the command line:
-    git clone https://github.com/<your_username>/pylidar-tls-canopy.git
+    git clone https://github.com/armstonj/pylidar-tls-canopy.git
 
     
 Prerequisites
