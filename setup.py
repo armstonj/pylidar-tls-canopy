@@ -4,6 +4,7 @@ Install script for riegl_canopy
 
 import os
 import sys
+import numpy
 import ctypes
 import pylidar_tls_canopy
 from setuptools import Extension,setup
@@ -44,7 +45,7 @@ def addRieglRXPDriver(extModules, cxxFlags):
         rieglModule = Extension(name='riegl_rxp', 
                 define_macros=[NUMPY_MACROS],
                 sources=['src/riegl_rxp.cpp', 'src/pylidar.c'],
-                include_dirs=[os.path.join(rivlibRoot, 'include')],
+                include_dirs=[os.path.join(rivlibRoot, 'include'), numpy.get_include()],
                 extra_compile_args=cxxFlags,
                 libraries=rivlibs,
                 library_dirs=[os.path.join(rivlibRoot, 'lib')],
