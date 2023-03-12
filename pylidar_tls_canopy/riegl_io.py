@@ -11,9 +11,13 @@ October 2022
 
 try:
     import riegl.rdb
+except ImportError:
+    print('RIEGL RDBlib is not available')
+
+try:
     import riegl_rxp
 except ImportError:
-    print('RIEGL libraries are not available')
+    print('RIEGL RiVlib is not available')
 
 import sys
 import json

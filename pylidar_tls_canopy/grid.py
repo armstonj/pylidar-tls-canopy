@@ -179,7 +179,7 @@ def grid_rdbx_cartesian(rdbx_list, transform_list, res, attribute='z', method='M
 def grid_rxp_cartesian(rxp_list, transform_list, res, attribute='z', method='MAX', extent=[50,50], 
     ulc=[-25,25], planefit=None):
     """
-    Wrapper function to grid the REIGL pulse data on a cartesian grid
+    Wrapper function to grid the RIEGL pulse data on a cartesian grid
     """
     if isinstance(rxp_list, str):
         rxp_list = [rxp_list]

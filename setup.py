@@ -60,16 +60,6 @@ def addRieglRXPDriver(extModules, cxxFlags):
 # get any C++ flags
 cxxFlags = getExtraCXXFlags()
 
-# Are we installing the command line scripts?
-# This is an experimental option for users who are
-# using the Python entry point feature of setuptools and Conda instead
-NO_INSTALL_CMDLINE = int(os.getenv('GEDIPY_NOCMDLINE', '0')) > 0
-if NO_INSTALL_CMDLINE:
-    scriptList = None
-else:
-    scriptList = ['bin/pylidar_scangrid','bin/pylidar_sphericalgrid',
-                  'bin/pylidar_cartesiangrid','bin/pylidar_plantprofile']
-
 # External modules        
 externalModules = []
 addRieglRXPDriver(externalModules, cxxFlags)
@@ -82,8 +72,15 @@ setup(name='pylidar-tls-canopy',
       version=pylidar_tls_canopy.__version__,
       author='John Armston',
       author_email='armston@umd.edu',
-      packages=['pylidar_tls_canopy'],
-      scripts=scriptList,
+      packages=['pylidar_tls_canopy','pylidar_tls_canopy.cmd'],
+      entry_points={
+          'console_scripts': [
+              'pylidar_cartesiangrid = pylidar_tls_canopy.cmd.cartesiangrid:run',
+              'pylidar_scangrid = pylidar_tls_canopy.cmd.scangrid:run',
+              'pylidar_sphericalgrid = pylidar_tls_canopy.cmd.sphericalgrid:run',
+              'pylidar_plantprofile = pylidar_tls_canopy.cmd.plantprofile:run',
+          ],
+      },
       ext_modules=externalModules,
       description='Tools for canopy gap probability modeling using RIEGL VZ and LEAF TLS measurements',
       classifiers=['Intended Audience :: Developers',
