@@ -41,7 +41,9 @@ def addRieglRXPDriver(extModules, cxxFlags):
         # but on Windows we need to do it manually
         if sys.platform == 'win32':
             rivlibs = ['lib' + name for name in rivlibs]
-            
+        elif sys.platform == 'darwin':
+            print('RiVlib library is not available for MacOX')
+
         rieglModule = Extension(name='riegl_rxp', 
                 define_macros=[NUMPY_MACROS],
                 sources=['src/riegl_rxp.cpp', 'src/pylidar.c'],
@@ -65,8 +67,7 @@ externalModules = []
 addRieglRXPDriver(externalModules, cxxFlags)
 
 if len(externalModules) == 0:
-    print('No RIEGL libraries found. Only the LEAF driver will be available.')
-
+    print('RiVLib not found. Only the LEAF and RDBX (if installed) drivers will be available.')
 
 setup(name='pylidar-tls-canopy',
       version=pylidar_tls_canopy.__version__,
