@@ -86,10 +86,10 @@ def run():
         vgrid_i = voxelization.VoxelGrid(dtm_filename=config['dtm'])
         vgrid_i.add_riegl_scan_position(rxp_fn, args.transform_fn[i], 
             rdbx_file=args.rdbx_fn[i], chunk_size=args.chunk_size)
-    vgrid_i.voxelize_scan(config['bounds'], config['voxelsize'], save_counts=True)
-    prefix = f'{args.outdir}/{name}'
-    vgrid_i.write_grids(prefix)
-    config['positions'][name] = vgrid_i.filenames
+        vgrid_i.voxelize_scan(config['bounds'], config['voxelsize'], save_counts=True)
+        prefix = f'{args.outdir}/{name}'
+        vgrid_i.write_grids(prefix)
+        config['positions'][name] = vgrid_i.filenames
 
     # Write the configuration to file
     config_fn = f'{args.outdir}/{args.name}_config.json'
