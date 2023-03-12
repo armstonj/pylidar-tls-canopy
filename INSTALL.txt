@@ -31,15 +31,18 @@ pylidar-tls-canopy will install without RIEGL libraries being available, but wil
 
 Installation
 ------------
-To install a new conda environment named pylidar-tls-canopy including this software:
+To install a new conda environment with all required dependencies:
   cd pylidar-tls-canopy
   conda env create -f environment.yml
-  conda activate pylidar-tls-canopy
+
 Before creating the conda environment, you will need to edit the environment.yml file to modify the paths to the RDBLib pip wheel and the RiVLIB download root directory on your local system. If you are only installing pylidar-tls-canopy for analysis of LEAF data then remove these lines. You also need to be using conda version >= 4.9.
 
-To install in your chosen environment, run the command (the -v provides verbose output):
-  cd pylidar-tls-canopy
+To load the conda environment:
+  conda activate pylidar-tls-canopy
+
+To install pylidar-tls-canopy, run the command:
   pip install . -v
+The -v provides verbose output, which can be helpful to diagnose problems.
  
 If you wish to install in a non-default location, use
   pip install . --prefix=/yourChosenDirectory
