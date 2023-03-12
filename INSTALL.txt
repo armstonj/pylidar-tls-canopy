@@ -12,7 +12,8 @@ Prerequisites
 -------------
     
 To install pylidar-tls-canopy you will need the packages listed in the environment.yml file
-For RiVLib, you will also need a C compiler that is compatible.
+
+For RiVLib, you will also need a C compiler that is compatible. RiVLib is not available for MacOS.
 
 The use of RIEGL proprietary formats requires the following environment variables to be set before building:
     export RIVLIB_ROOT="/RiVLibRootDirectory"
@@ -36,18 +37,10 @@ To install a new conda environment named pylidar-tls-canopy including this softw
   conda activate pylidar-tls-canopy
 Before creating the conda environment, you will need to edit the environment.yml file to modify the paths to the RDBLib pip wheel and the RiVLIB download root directory on your local system. If you are only installing pylidar-tls-canopy for analysis of LEAF data then remove these lines. You also need to be using conda version >= 4.9.
 
-To install in your chosen environment, run the command:
+To install in your chosen environment, run the command (the -v provides verbose output):
   cd pylidar-tls-canopy
-  pip install .
-  
+  pip install . -v
+ 
 If you wish to install in a non-default location, use
   pip install . --prefix=/yourChosenDirectory
-
-If installed in a non-default location, you will then need to ensure that the 
-right environment variables are set. For simple bash syntax, this would be 
-something like:
-    export PATH="/yourChosenDirectory/bin:$PATH"
-    export PYTHONPATH="/yourChosenDirectory/lib/pythonX.X/site-packages:$PYTHONPATH"
-    
-Note that the pythonX.X sub-directory needs to match your version of python. 
 
