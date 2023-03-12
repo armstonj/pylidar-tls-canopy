@@ -12,5 +12,6 @@ pylidar_cartesiangrid -h
 pylidar_scangrid -h
 pylidar_sphericalgrid -h
 pylidar_plantprofile -h
+pylidar_voxelization -h
 ```
 All of these are applicable to RIEGL data. Only pylidar_plantprofile is applicable to LEAF data.
