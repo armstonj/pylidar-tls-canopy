@@ -635,3 +635,23 @@ def run_linear_model_numba(zenith, pgap, weights, null=-9999, min_n=3):
     
     return paiv,paih
 
+
+def write_voxelgrid(vmodel, data, filename):
+    """
+    Write a voxelgrid to file
+    """
+    profile = {'driver': 'GTiff', 'dtype': 'float32', 'nodata': vmodel.nodata,
+               'width': vmodel.nx, 'height': vmodel.ny, 'count': vmodel.nz,
+               'transform': Affine(vmodel.resolution, 0.0, vmodel.bounds[0], 0.0, 
+                                   -vmodel.resolution, vmodel.bounds[4]),
+               'blockxsize': 256, 'blockysize': 256, 'tiled': True,
+               'compress': 'deflate', 'interleave': 'pixel'}
+    elev = vmodel.bounds[2] + vmodel.nz * vmodel.resolution
+    with rio.Env():
+        with rio.open(filename, 'w', **profile) as dst:
+            dst.write(data)
+            dst.build_overviews([2,4,8], Resampling.average)
+            for i in range(vmodel.nz):
+                description = f'{elev[i]:.02f}m'
+                dst.set_band_description(i+1, description)
+

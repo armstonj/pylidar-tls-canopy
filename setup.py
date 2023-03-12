@@ -42,7 +42,7 @@ def addRieglRXPDriver(extModules, cxxFlags):
         if sys.platform == 'win32':
             rivlibs = ['lib' + name for name in rivlibs]
         elif sys.platform == 'darwin':
-            print('RiVlib library is not available for MacOX')
+            print('RiVlib library is not available for MacOS')
 
         rieglModule = Extension(name='riegl_rxp', 
                 define_macros=[NUMPY_MACROS],
@@ -80,6 +80,7 @@ setup(name='pylidar-tls-canopy',
               'pylidar_scangrid = pylidar_tls_canopy.cmd.scangrid:run',
               'pylidar_sphericalgrid = pylidar_tls_canopy.cmd.sphericalgrid:run',
               'pylidar_plantprofile = pylidar_tls_canopy.cmd.plantprofile:run',
+              'pylidar_voxelization = pylidar_tls_canopy.cmd.voxelization:run',
           ],
       },
       ext_modules=externalModules,
