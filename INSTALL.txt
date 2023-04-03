@@ -47,10 +47,3 @@ The -v provides verbose output, which can be helpful to diagnose problems.
 If you wish to install in a non-default location, use
   pip install . --prefix=/yourChosenDirectory
 
-
-Troubleshooting
----------------
-Here are some installation errors that users have encountered and their solution:
-  - Linux: "ImportError: riegl_rxp.cpython-310-x86_64-linux-gnu.so: undefined symbol: __libc_single_threaded" - Check that the RiVLib version matches your systems gcc version and that the environment variable RIVLIB_ROOT points to the correct version.
-  - Linux (Ubuntu): "gcc: fatal error: cannot execute ‘cc1plus’: execvp: No such file or directory" - Install the g++ package ("sudo apt install g++").
-
