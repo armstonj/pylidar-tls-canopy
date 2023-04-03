@@ -162,7 +162,7 @@ class VoxelGrid:
         """
         rdb_attributes = {'riegl.xyz': 'riegl_xyz','riegl.target_index': 'target_index',
             'riegl.target_count': 'target_count', 'riegl.scan_line_index': 'scanline', 
-            'riegl.shot_index_line': 'scanline_idx'}
+            'riegl.shot_index_line': 'scanline_idx'} 
         with riegl_io.RDBFile(rdbx_file, chunk_size=chunk_size, attributes=rdb_attributes,
             transform_file=transform_file) as rdb:
 

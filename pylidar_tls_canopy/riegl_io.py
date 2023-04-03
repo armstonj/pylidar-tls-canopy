@@ -19,6 +19,7 @@ try:
 except ImportError:
     print('RIEGL RiVlib is not available')
 
+import re
 import sys
 import json
 import numpy as np
