@@ -29,7 +29,7 @@ from . import PRR_MAX_TARGETS
 
 
 class RXPFile:
-    def __init__(self, filename, transform_file=None, pose_file=None):
+    def __init__(self, filename, transform_file=None, pose_file=None, query_str=None):
         self.filename = filename
         if transform_file is not None:
             self.transform = read_transform_file(transform_file)
@@ -39,6 +39,7 @@ class RXPFile:
             self.transform = calc_transform_matrix(pose['pitch'], pose['roll'], pose['yaw'])
         else:
             self.transform = None
+        self.query_str = query_str
         self.read_file()
 
     def __enter__(self):
@@ -47,11 +48,43 @@ class RXPFile:
     def __exit__(self, type, value, traceback):
         pass
 
+    def run_query(self):
+        """
+        Query the points array
+        """
+        if not isinstance(query_str, list):
+            query_str = [query_str]
+
+        r = re.compile(r'((?:\(|))\s*([a-z]+)\s*(<|>|==|>=|<=|!=)\s*([-+]?\d*\.\d+|\d+)\s*((?:\)|))')
+        valid = np.ones(self.points.shape[0], dtype=bool)
+        for q in query_str:
+            m = r.match(q)
+            if m is not None:
+                if m.group(2) in self.points:
+                    q_str = f'self.points[{m.group(2)}] {m.group(3)} {m.group(4)}' 
+                else:
+                    msg = f'{m.group(2)} is not a valid point attribute name'
+                    print(msg)
+                    return
+                try:
+                    valid &= eval(q_str)
+                except SyntaxError:
+                    msg = f'{q} is not a valid query string'
+                    print(msg)
+        
+        return valid
+
     def read_file(self):
         """
         Read file and get global stats
         """
         self.meta, points, pulses = riegl_rxp.readFile(self.filename)
+
+        if self.query_str is not None:
+            points = points[self.run_query()]
+            tmp_index,tmp_count = reindex_targets(points['target_index'], pulses['target_count'])
+            pulses['target_count'] = tmp_count
+            points['target_index'] = tmp_index
 
         self.minc = 0
         self.maxc = np.max(pulses['scanline'])
@@ -137,14 +170,11 @@ class RXPFile:
 
 class RDBFile:
     def __init__(self, filename, attributes=DEFAULT_RDB_ATTRIBUTES, chunk_size=100000, 
-        transform_file=None, query_str=None, first_only=False):
+        transform_file=None, query_str=None):
         self.filename = filename
         self.point_attributes = attributes
         self.chunk_size = chunk_size
-        if first_only:
-            self.query_str = '(riegl.target_index == 1)'
-        else:
-            self.query_str = query_str
+        self.query_str = query_str
         self.transform_file = transform_file
         self.query = None
         self.open_file()
@@ -238,7 +268,7 @@ class RDBFile:
 
     def read_point_records(self):
         """
-        Read the entire file into a structured array
+        Read the entire file into a dictionary of attributes
         """
         rdb_attributes = {'riegl.target_index': 'target_index', 'riegl.target_count': 'target_count'}
         points = {}
@@ -268,6 +298,33 @@ def get_rdbx_points_by_rxp_pulse(values, target_index, scanline, scanline_idx,
     idx = np.searchsorted(pulse_id_rxp, pulse_id_rdb, sorter=pulse_sort_idx)
     
     output[idx,target_index-1] = values
+
+
+@njit
+def reindex_targets(target_index, target_count):
+    """
+    Reindex the target index and count
+    Assumes the input data are time-sequential
+    """
+    new_target_index = np.zeros_like(target_index)
+    new_target_count = np.zeros_like(target_count)
+    
+    current_target = 1
+    pulse_index = 0
+    for i in range(target_index.shape[0]):
+        while target_count[pulse_index] == 0:
+            pulse_index += 1
+        if target_index[i] >= current_target:
+            new_target_index[i] = current_target
+            new_target_count[pulse_index] += 1
+            current_target += 1
+        else:
+            current_target = 1
+            pulse_index += 1
+            new_target_index[i] = current_target
+            new_target_count[pulse_index] += 1
+
+    return new_target_index,new_target_count
 
 
 def get_rdb_point_attributes(filename):
