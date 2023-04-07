@@ -90,11 +90,14 @@ class LeafScanFile:
         if num_short_lines > 0:
             idx = self.data['sample_time'].notna()
             self.data = self.data.loc[idx]
-            msg = f'{num_short_lines:d} truncated records were ignored in {self.filename}'
+            dtypes = {'sample_count':int, 'scan_encoder':float, 'rotary_encoder':float,
+                'range1':float, 'intensity1':int, 'range2':float, 'sample_time':float}
+            self.data = self.data.astype(dtypes)
+            msg = f'Removed {num_short_lines:d} truncated records in {self.filename}'
             print(msg)
            
-        self.data['target_count'] = 2 - (np.isnan(self.data['range1']).astype(int) +
-            np.isnan(self.data['range2']).astype(int))
+        self.data['target_count'] = (2 - self.data['range1'].isna().astype(int) +
+            self.data['range2'].isna().astype(int))
 
         self.data['datetime'] = [self.datetime + timedelta(milliseconds=s)
             for s in self.data['sample_time'].cumsum()]
@@ -102,7 +105,7 @@ class LeafScanFile:
         self.data['zenith'] = self.data['scan_encoder'] / 1e4 * 2 * np.pi
         self.data['azimuth'] = self.data['rotary_encoder'] / 2e4 * 2 * np.pi
 
-        if transform:
+        if self.transform:
             dx,dy,dz = (d / 1024 for d in self.header['Tilt'])
             r,theta,phi = xyz2rza(dx, dy, dz)
             self.data['zenith'] += theta
@@ -115,7 +118,7 @@ class LeafScanFile:
         self.data.loc[idx,'azimuth'] = self.data.loc[idx,'azimuth'] - (2 * np.pi)
         idx = self.data['azimuth'] < 0
         self.data.loc[idx,'azimuth'] = self.data.loc[idx,'azimuth'] + (2 * np.pi)
-        self.data['zenith'] = np.abs(self.data['zenith'] - np.pi)
+        self.data['zenith'] = (self.data['zenith'] - np.pi).abs()
 
         for n,name in enumerate(['range1','range2'], start=1):
             x,y,z = rza2xyz(self.data[name], self.data['zenith'], self.data['azimuth'])
