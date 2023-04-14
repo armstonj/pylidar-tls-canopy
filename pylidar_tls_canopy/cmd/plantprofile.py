@@ -58,7 +58,9 @@ def get_args():
     argparser.add_argument('--grid_extent', metavar='FLOAT', type=float, default=60,
         help='Plane fit grid extent (m)')
     argparser.add_argument('--grid_resolution', metavar='FLOAT', type=float, default=10,
-        help='Plane fit grid resolution (m)')
+        help='Plane fit grid resolution (m)') 
+    argparser.add_argument('--grid_origin', metavar='FLOAT', type=float, default=None, nargs=2,
+        help='Plane fit grid origin [x,y]')
     argparser.add_argument('-s','--sensor_height', metavar='FLOAT', type=float, default=1.6,
         help='Height above ground of LEAF sensor origin (m)')
     argparser.add_argument('-t','--transform_file', metavar='FILE', type=str, nargs='+',
@@ -91,12 +93,18 @@ def run():
         args.rdbx_input = [None] * len(args.input_file)
         rxp = True
 
+    # Check if grid origin is set
+    if args.grid_origin is None:
+        transform_matrix = riegl_io.read_transform_file(args.transform_file[0])
+        x0,y0,z0,_ = transform_matrix[3,:]
+        args.grid_origin = [x0,y0]
+
     # Get the ground plane
     ground_plane = None
     if not args.leaf:
         print('Fitting the ground plane')
         x,y,z,r = plant_profile.get_min_z_grid(args.rdbx_input, args.transform_file,
-            args.grid_extent, args.grid_resolution, rxp=rxp)
+            args.grid_extent, args.grid_resolution, grid_origin=args.grid_origin, rxp=rxp)
         planefit = plant_profile.plane_fit_hubers(x, y, z, w=1/r, reportfile=args.reportfile)
         ground_plane = planefit['Parameters']
 

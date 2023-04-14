@@ -406,25 +406,26 @@ class Jupp2009:
             df.to_csv(outfile, float_format='%.05f', index=False)
 
 
-def get_min_z_grid(input_files, transform_files, grid_extent, grid_resolution, rxp=False):
+def get_min_z_grid(input_files, transform_files, grid_extent, grid_resolution, 
+    grid_origin=[0.0,0.0], rxp=False):
     """
     Wrapper function a minimum z grid for input to the ground plane fitting
     """
     if not rxp:
         x,y,z,r = get_min_z_grid_rdbx(input_files, transform_files, 
-            grid_extent, grid_resolution)
+            grid_extent, grid_resolution, grid_origin)
     else:
         x,y,z,r = get_min_z_grid_rxp(input_files, transform_files, 
-            grid_extent, grid_resolution)
+            grid_extent, grid_resolution, grid_origin)
     return x,y,z,r
 
 
-def get_min_z_grid_rdbx(rdbx_files, transform_files, grid_extent, grid_resolution):
+def get_min_z_grid_rdbx(rdbx_files, transform_files, grid_extent, grid_resolution, grid_origin):
     """
     Wrapper function a minimum z grid for input to the ground plane fitting
     """
     rdb_attributes = {'riegl.xyz': 'riegl_xyz'}
-    ncols = nrows = int(grid_extent // grid_resolution) + 1
+    ncols = nrows = (grid_extent // grid_resolution) + 1
     outgrid = np.empty((4,nrows,ncols), dtype=np.float32)
     valid = np.zeros((nrows,ncols), dtype=bool)
     for i,fn in enumerate(rdbx_files):
@@ -437,14 +438,16 @@ def get_min_z_grid_rdbx(rdbx_files, transform_files, grid_extent, grid_resolutio
                     y = rdb.get_chunk('y')
                     z = rdb.get_chunk('z')
                     r = rdb.get_chunk('range')
-                    min_z_grid(x, y, z, r, -grid_extent/2, grid_extent/2,
+                    minx = grid_origin[0] - grid_extent / 2
+                    maxy = grid_origin[1] + grid_extent / 2
+                    min_z_grid(x, y, z, r, minx, maxy,
                         grid_resolution, outgrid, valid)
     x,y,z,r = (outgrid[0,:,:][valid], outgrid[1,:,:][valid], 
                outgrid[2,:,:][valid], outgrid[3,:,:][valid])
     return x,y,z,r
 
 
-def get_min_z_grid_rxp(rxp_files, transform_files, grid_extent, grid_resolution):
+def get_min_z_grid_rxp(rxp_files, transform_files, grid_extent, grid_resolution, grid_origin):
     """
     Wrapper function a minimum z grid for input to the ground plane fitting
     Using RXP only as input
@@ -458,7 +461,9 @@ def get_min_z_grid_rxp(rxp_files, transform_files, grid_extent, grid_resolution)
             y = rxp.get_data('y', return_as_point_attribute=True)
             z = rxp.get_data('z', return_as_point_attribute=True)
             r = rxp.get_data('range', return_as_point_attribute=True)
-            min_z_grid(x, y, z, r, -grid_extent/2, grid_extent/2,
+            minx = grid_origin[0] - grid_extent / 2
+            maxy = grid_origin[1] + grid_extent / 2
+            min_z_grid(x, y, z, r, minx, maxy,
                 grid_resolution, outgrid, valid)
     x,y,z,r = (outgrid[0,:,:][valid], outgrid[1,:,:][valid],
                outgrid[2,:,:][valid], outgrid[3,:,:][valid])
