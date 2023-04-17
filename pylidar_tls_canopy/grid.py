@@ -231,15 +231,14 @@ def grid_leaf_spherical(leaf_fn, resolution, attribute='range',
     return scan_grid
 
 
-def grid_rdbx_spherical(rdbx_fn, transform_fn, resolution, attribute='range', 
-    first_only=False, method='MEAN'):
+def grid_rdbx_spherical(rdbx_fn, transform_fn, resolution, attribute='range', method='MEAN'):
     """
     Wrapper function to grid the REIGL point data on a spherical grid
     """
     res = np.radians(resolution)
     ncols = int( (2 * np.pi) // res + 1 )
     nrows = int( np.pi // res + 1 )
-    with riegl_io.RDBFile(rdbx_fn, transform_file=transform_fn, first_only=first_only) as rdb:
+    with riegl_io.RDBFile(rdbx_fn, transform_file=transform_fn) as rdb:
         with LidarGrid(ncols, nrows, 0, np.pi, resolution=res, init_cntgrid=True) as grd:
             while rdb.point_count_current < rdb.point_count_total:
                 rdb.read_next_chunk()
@@ -254,8 +253,7 @@ def grid_rdbx_spherical(rdbx_fn, transform_fn, resolution, attribute='range',
     return scan_grid
 
 
-def grid_rxp_spherical(rxp_fn, transform_fn, resolution, attribute='zenith', 
-    first_only=False, method='MEAN'):
+def grid_rxp_spherical(rxp_fn, transform_fn, resolution, attribute='zenith', method='MEAN'):
     """
     Wrapper function to grid the REIGL pulse data on a spherical grid
     """
@@ -272,9 +270,6 @@ def grid_rxp_spherical(rxp_fn, transform_fn, resolution, attribute='zenith',
             yidx = rxp.get_data('zenith', return_as_point_attribute=return_as_point_attribute) // res
             vals = rxp.get_data(attribute, return_as_point_attribute=return_as_point_attribute)
             valid = (xidx >= 0) & (xidx < ncols) & (yidx >= 0) & (yidx < nrows)
-            if first_only:
-                index = rxp.get_data('target_index', return_as_point_attribute=return_as_point_attribute)
-                valid &= (index == 1)
             grd.add_values(vals[valid], np.uint16(xidx[valid]), np.uint16(yidx[valid]), 
                 0, method=method)
             grd.finalize_grid(method=method)
