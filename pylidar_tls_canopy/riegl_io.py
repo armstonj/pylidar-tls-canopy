@@ -11,6 +11,7 @@ October 2022
 
 try:
     import riegl.rdb
+    import riegl_rdb
 except ImportError:
     print('RIEGL RDBlib is not available')
 
@@ -82,10 +83,13 @@ class RXPFile:
         self.meta, points, pulses = riegl_rxp.readFile(self.filename)
 
         if self.query_str is not None:
-            points = points[self.run_query()]
-            tmp_index,tmp_count = reindex_targets(points['target_index'], pulses['target_count'])
-            pulses['target_count'] = tmp_count
-            points['target_index'] = tmp_index
+            target_count = np.repeat(pulses['target_count'], pulses['target_count'])
+            scanline = np.repeat(pulses['scanline'], pulses['target_count'])
+            scanline_idx = np.repeat(pulses['scanline_idx'], pulses['target_count'])
+            valid = self.run_query()
+            points = points[valid]
+            target_index,target_count = reindex_targets(points['target_index'], 
+                target_count[valid], scanline[valid], scanline_idx[valid])
 
         self.minc = 0
         self.maxc = np.max(pulses['scanline'])
@@ -170,7 +174,7 @@ class RXPFile:
 
 
 class RDBFile:
-    def __init__(self, filename, attributes=DEFAULT_RDB_ATTRIBUTES, chunk_size=100000, 
+    def __init__(self, filename, attributes=DEFAULT_RDB_ATTRIBUTES, chunk_size=None, 
         transform_file=None, query_str=None):
         self.filename = filename
         self.point_attributes = attributes
@@ -191,10 +195,6 @@ class RDBFile:
         Open file, create attribute buffers, and get global stats
         """
         self.rdb = riegl.rdb.rdb_open(self.filename)
-        self.points = {}
-        for p in self.point_attributes:
-            name = self.point_attributes[p]
-            self.points[name] = riegl.rdb.AttributeBuffer(self.rdb.point_attributes[p], self.chunk_size)
 
         with self.rdb.stat as stat:
             self.point_count_current = 0
@@ -209,6 +209,14 @@ class RDBFile:
             self.max_target_count = stat.maximum_riegl_target_count
             self.max_range = np.sqrt(self.maxx**2 + self.maxy**2 + self.maxz**2)
 
+        if self.chunk_size is None:
+            self.chunk_size = self.point_count_total
+
+        self.points = {}
+        for p in self.point_attributes:
+            name = self.point_attributes[p]
+            self.points[name] = riegl.rdb.AttributeBuffer(self.rdb.point_attributes[p], self.chunk_size)
+
         if self.transform_file is not None:
             self.transform = read_transform_file(self.transform_file)
         else:
@@ -216,7 +224,7 @@ class RDBFile:
             self.transform = calc_transform_matrix(pose['orientation']['pitch'], 
                 pose['orientation']['roll'], pose['orientation']['yaw']) 
 
-    def read_next_chunk(self):
+    def read_next_chunk(self, reindex=False):
         """
         Iterate the point cloud chunk-wise
         """
@@ -229,12 +237,25 @@ class RDBFile:
         if self.point_count > 0:
             self.point_count = self.query.next(self.chunk_size)
             if 'riegl_xyz' in self.points:
-                x_t,y_t,z_t = apply_transformation(self.points['riegl_xyz'][:,0], self.points['riegl_xyz'][:,1],
-                    self.points['riegl_xyz'][:,2], self.chunk_size, self.transform)
+                points_tmp = self.points['riegl_xyz'][0:self.point_count]
+                x_t,y_t,z_t = apply_transformation(points_tmp[:,0], points_tmp[:,1],
+                    points_tmp[:,2], self.point_count, self.transform)
                 self.points['x'] = x_t + self.transform[3,0]
                 self.points['y'] = y_t + self.transform[3,1]
                 self.points['z'] = z_t + self.transform[3,2]
                 self.points['range'],self.points['zenith'],self.points['azimuth'] = xyz2rza(x_t, y_t, z_t)
+             
+                if reindex:
+                    idx = np.arange(self.point_count, dtype=np.uint32)
+                    for name in ('target_index','scanline_idx','scanline'):
+                        sidx = np.argsort(self.points[name][idx], kind='stable')
+                        idx = idx[sidx]
+                    new_target_index, new_target_count = reindex_targets(self.points['target_index'][idx], 
+                        self.points['target_count'][idx], self.points['scanline'][idx], 
+                        self.points['scanline_idx'][idx])
+                    self.points['target_index'][idx] = new_target_index
+                    self.points['target_count'][idx] = new_target_count
+            
             self.point_count_current += self.point_count
         else:
             self.point_count_total = self.point_count_current
@@ -267,6 +288,12 @@ class RDBFile:
             val =  self.rdb.point_attributes[key]
         return val
 
+        if self.query is None:
+            self.query = self.rdb.select(self.query_str)
+            self.point_count = 1
+            for k in self.points:
+                self.query.bind(self.points[k])
+
     def read_point_records(self):
         """
         Read the entire file into a dictionary of attributes
@@ -274,7 +301,7 @@ class RDBFile:
         rdb_attributes = {'riegl.target_index': 'target_index', 'riegl.target_count': 'target_count'}
         points = {}
         with riegl.rdb.rdb_open(self.filename) as rdb:
-            for riegl_points in rdb.select(chunk_size=self.point_count_total):
+            for riegl_points in rdb.select(self.query_str, chunk_size=self.point_count_total):
                 for k in rdb_attributes:
                     points[rdb_attributes[k]] = riegl_points[k]
                 x_t,y_t,z_t = apply_transformation(riegl_points['riegl.xyz'][:,0], riegl_points['riegl.xyz'][:,1],
@@ -302,29 +329,24 @@ def get_rdbx_points_by_rxp_pulse(values, target_index, scanline, scanline_idx,
 
 
 @njit
-def reindex_targets(target_index, target_count):
+def reindex_targets(target_index, target_count, scanline, scanline_idx):
     """
     Reindex the target index and count
     Assumes the input data are time-sequential
     """
-    new_target_index = np.zeros_like(target_index)
-    new_target_count = np.zeros_like(target_count)
-    
-    current_target = 1
-    pulse_index = 0
-    for i in range(target_index.shape[0]):
-        while target_count[pulse_index] == 0:
-            pulse_index += 1
-        if target_index[i] >= current_target:
-            new_target_index[i] = current_target
-            new_target_count[pulse_index] += 1
-            current_target += 1
-        else:
-            current_target = 1
-            pulse_index += 1
-            new_target_index[i] = current_target
-            new_target_count[pulse_index] += 1
+    new_target_index = np.ones_like(target_index)
+    new_target_count = np.ones_like(target_count)
 
+    n = 1
+    for i in range(1, target_index.shape[0], 1):
+        same_pulse = (scanline[i] == scanline[i-1]) & (scanline_idx[i] == scanline_idx[i-1])
+        if same_pulse:
+            new_target_index[i] = new_target_index[i-1] + 1 
+            new_target_count[i-n:i+1] = n + 1
+            n += 1
+        else:
+            n = 1
+        
     return new_target_index,new_target_count
 
 

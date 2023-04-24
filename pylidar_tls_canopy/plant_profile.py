@@ -94,20 +94,20 @@ class Jupp2009:
             sys.exit()
         sum_by_index_2d(shot_cnt, z_idx, a_idx, self.shot_output)
 
-    def add_riegl_scan_position(self, rxp_file, transform_file, rdbx_file=None,
+    def add_riegl_scan_position(self, rxp_file, transform_file, rdbx_file=None, query_str=None,
         method='WEIGHTED', min_zenith=5, max_zenith=70, max_hr=None, sensor_height=None):
         """
         Add a scan position to the profile
         """
         if rdbx_file is None:
             self.add_riegl_scan_position_rxp(rxp_file, transform_file, sensor_height=sensor_height,
-                method=method, min_zenith=min_zenith, max_zenith=max_zenith, max_hr=max_hr)
+                method=method, min_zenith=min_zenith, max_zenith=max_zenith, max_hr=max_hr, query_str=query_str)
         else:
             self.add_riegl_scan_position_rdbx(rdbx_file, rxp_file, transform_file, sensor_height=sensor_height,
-                method=method, min_zenith=min_zenith, max_zenith=max_zenith, max_hr=max_hr)
+                method=method, min_zenith=min_zenith, max_zenith=max_zenith, max_hr=max_hr, query_str=query_str)
 
     def add_riegl_scan_position_rdbx(self, rdbx_file, rxp_file, transform_file, sensor_height=None,
-        method='WEIGHTED', min_zenith=5, max_zenith=70, max_hr=None):
+        method='WEIGHTED', min_zenith=5, max_zenith=70, max_hr=None, query_str=None):
         """
         Add a scan position to the profile using rdbx
         """
@@ -115,11 +115,15 @@ class Jupp2009:
         max_zenith_r = np.radians(max_zenith)
         
         rdb_attributes = {'riegl.xyz': 'riegl_xyz','riegl.target_index': 'target_index',
-            'riegl.target_count': 'target_count'}        
-        with riegl_io.RDBFile(rdbx_file, chunk_size=100000, attributes=rdb_attributes,
-            transform_file=transform_file) as rdb:
+            'riegl.target_count': 'target_count', 'riegl.scan_line_index': 'scanline', 
+            'riegl.shot_index_line': 'scanline_idx'}        
+        with riegl_io.RDBFile(rdbx_file, attributes=rdb_attributes,
+            transform_file=transform_file, query_str=query_str) as rdb:
             while rdb.point_count_current < rdb.point_count_total:
-                rdb.read_next_chunk()
+                if query_str is None:
+                    rdb.read_next_chunk()
+                else:
+                    rdb.read_next_chunk(reindex=True)
                 if rdb.point_count > 0:
                     zenith = rdb.get_chunk('zenith')
                     azimuth = rdb.get_chunk('azimuth')
@@ -128,12 +132,15 @@ class Jupp2009:
                     x = rdb.get_chunk('x')
                     y = rdb.get_chunk('y')
                     z = rdb.get_chunk('z')
+                    
                     if sensor_height is not None:
                         zoffset = rdb.transform[3,2] - sensor_height
                     else:
                         zoffset = self.ground_plane[0]
+                    
                     height = z - (self.ground_plane[1] * x +
                         self.ground_plane[2] * y + zoffset)
+                    
                     idx = (zenith >= min_zenith_r) & (zenith < max_zenith_r)
                     if max_hr is not None:
                         hr = rdb.get_chunk('range') * np.sin(zenith)
@@ -151,7 +158,7 @@ class Jupp2009:
                 self.add_shots(count[idx], zenith[idx], azimuth[idx], method=method)
 
     def add_riegl_scan_position_rxp(self, rxp_file, transform_file, sensor_height=None,
-        method='WEIGHTED', min_zenith=5, max_zenith=70, max_hr=None):
+        method='WEIGHTED', min_zenith=5, max_zenith=70, max_hr=None, query_str=None):
         """
         Add a scan position to the profile using rxp
         VZ400 and/or pulse rate <=300 kHz only
@@ -159,7 +166,7 @@ class Jupp2009:
         min_zenith_r = np.radians(min_zenith)
         max_zenith_r = np.radians(max_zenith)
 
-        with riegl_io.RXPFile(rxp_file, transform_file=transform_file) as rxp:
+        with riegl_io.RXPFile(rxp_file, transform_file=transform_file, query_str=query_str) as rxp:
             # Point data
             azimuth = rxp.get_data('azimuth', return_as_point_attribute=True)
             zenith = rxp.get_data('zenith', return_as_point_attribute=True)
