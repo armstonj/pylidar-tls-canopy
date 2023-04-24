@@ -3,7 +3,7 @@ name: pylidar-tls-canopy
 channels:
   - conda-forge
 dependencies:
-  - python>=3.8
+  - python>=3.10
   - numpy
   - numba
   - pandas
@@ -22,5 +22,6 @@ dependencies:
     - /gpfs/data1/vclgp/software/rdblib-2.4.0-x86_64-linux/interface/python/riegl.rdb-2.4.0-cp34.cp35.cp36.cp37.cp38.cp39.cp310-none-linux_x86_64.whl
     - -e .
 variables:
-  RIVLIB_ROOT: /gpfs/data1/vclgp/software/rivlib-2_6_0-x86_64-linux-gcc11
+  RIVLIB_ROOT: /gpfs/data1/vclgp/software/rivlib-2_6_0-x86_64-linux-gcc9
+  RDBLIB_ROOT: /gpfs/data1/vclgp/software/rdblib-2.4.0-x86_64-linux
   PYLIDAR_CXX_FLAGS: -std=c++11 

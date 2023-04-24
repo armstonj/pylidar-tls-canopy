@@ -2,7 +2,7 @@
  * riegl_rxp.cpp
  *
  *
- * This file is part of riegl_canopy
+ * This file is part of riegl-tls-canopy
  * This file was part of pylidar (C) Sam Gillingham and John Armston
  * Modified for riegl_tools in 2021 by Sam Gillingham and Nick Goodwin
  * Modified for pylidar-tls-canopy in 2022 by John Armston
