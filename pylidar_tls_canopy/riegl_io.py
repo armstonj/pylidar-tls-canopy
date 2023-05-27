@@ -31,7 +31,7 @@ from . import PRR_MAX_TARGETS
 
 
 class RXPFile:
-    def __init__(self, filename, transform_file=None, pose_file=None, query_str=None):
+    def __init__(self, filename, transform_file=None, pose_file=None, query_str=None, reindex=False):
         self.filename = filename
         if transform_file is not None:
             self.transform = read_transform_file(transform_file)
@@ -42,7 +42,7 @@ class RXPFile:
         else:
             self.transform = None
         self.query_str = query_str
-        self.read_file()
+        self.read_file(reindex=reindex)
 
     def __enter__(self):
         return self
@@ -76,20 +76,15 @@ class RXPFile:
         
         return valid
 
-    def read_file(self):
+    def read_file(self, reindex=False):
         """
         Read file and get global stats
         """
         self.meta, points, pulses = riegl_rxp.readFile(self.filename)
 
         if self.query_str is not None:
-            target_count = np.repeat(pulses['target_count'], pulses['target_count'])
-            scanline = np.repeat(pulses['scanline'], pulses['target_count'])
-            scanline_idx = np.repeat(pulses['scanline_idx'], pulses['target_count'])
             valid = self.run_query()
             points = points[valid]
-            target_index,target_count = reindex_targets(points['target_index'], 
-                target_count[valid], scanline[valid], scanline_idx[valid])
 
         self.minc = 0
         self.maxc = np.max(pulses['scanline'])
@@ -121,6 +116,21 @@ class RXPFile:
             self.points['y'] = y_t
             self.points['z'] = z_t
         self.points['valid'] = np.repeat(pulses['scanline'], pulses['target_count']) >= 0
+
+        if self.query_str is not None and reindex:
+            target_count = np.repeat(pulses['target_count'], pulses['target_count'])
+            scanline = np.repeat(pulses['scanline'], pulses['target_count'])
+            scanline_idx = np.repeat(pulses['scanline_idx'], pulses['target_count'])
+            
+            new_target_index,new_target_count = reindex_targets(points['target_index'],
+                target_count[valid], scanline[valid], scanline_idx[valid])
+            self.points['target_index'] = new_target_index
+            self.points['target_count'] = new_target_count
+
+            self.pulses['target_count'] = np.zeros_like(pulses['target_count'])
+            first = (new_target_index == 1)
+            idx = np.searchsorted(pulses['pulse_id'], points['pulse_id'][first])
+            self.pulses['target_count'][idx] = new_target_count[first]
 
         for name in pulses.dtype.names:
             if name not in self.pulses:
@@ -348,6 +358,22 @@ def reindex_targets(target_index, target_count, scanline, scanline_idx):
             n = 1
         
     return new_target_index,new_target_count
+
+
+@njit
+def target_count_by_pulse(point_target_index, point_target_count, 
+    point_scanline, point_scanline_idx, scanline, scanline_idx):
+    """
+    Derive the per pulse point count from the reindexed point data
+    """
+    target_count = np.zeros_like(scanline, dtype=np.uint8)
+
+    for i in range(scanline.shape[0]):
+        idx = (point_scanline == scanline[i]) & (point_scanline_idx == scanline_idx[i])
+        if np.any(idx):
+            target_count[i] = point_target_count[idx][0]
+
+    return target_count
 
 
 def get_rdb_point_attributes(filename):

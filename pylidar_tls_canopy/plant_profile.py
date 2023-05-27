@@ -132,6 +132,8 @@ class Jupp2009:
                     x = rdb.get_chunk('x')
                     y = rdb.get_chunk('y')
                     z = rdb.get_chunk('z')
+                    point_scanline = rdb.get_chunk('scanline')
+                    point_scanline_idx = rdb.get_chunk('scanline_idx')
                     
                     if sensor_height is not None:
                         zoffset = rdb.transform[3,2] - sensor_height
@@ -152,7 +154,10 @@ class Jupp2009:
         with riegl_io.RXPFile(rxp_file, transform_file=transform_file) as rxp:
             azimuth = rxp.get_data('azimuth', return_as_point_attribute=False)
             zenith = rxp.get_data('zenith', return_as_point_attribute=False)
-            count = rxp.get_data('target_count', return_as_point_attribute=False)
+            scanline = rxp.get_data('scanline', return_as_point_attribute=False)
+            scanline_idx = rxp.get_data('scanline_idx', return_as_point_attribute=False)
+            count = riegl_io.target_count_by_pulse(index, count,        
+                point_scanline, point_scanline_idx, scanline, scanline_idx)
             idx = (zenith >= min_zenith_r) & (zenith < max_zenith_r)
             if np.any(idx):
                 self.add_shots(count[idx], zenith[idx], azimuth[idx], method=method)
@@ -166,7 +171,8 @@ class Jupp2009:
         min_zenith_r = np.radians(min_zenith)
         max_zenith_r = np.radians(max_zenith)
 
-        with riegl_io.RXPFile(rxp_file, transform_file=transform_file, query_str=query_str) as rxp:
+        with riegl_io.RXPFile(rxp_file, transform_file=transform_file, query_str=query_str,
+            reindex=True) as rxp:
             # Point data
             azimuth = rxp.get_data('azimuth', return_as_point_attribute=True)
             zenith = rxp.get_data('zenith', return_as_point_attribute=True)
