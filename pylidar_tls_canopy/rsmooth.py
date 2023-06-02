@@ -37,12 +37,17 @@ def bisquare(r, h):
     return W
 
 
-def rsmooth(y):
+def rsmooth(y,p=None):
     if y.ndim < 2:
         y = np.atleast_2d(y)
         one_dim = True
     else:
         one_dim = False
+
+    if p is None:
+        do_gcv = True
+    else:
+        do_gcv = False 
 
     n1, n2 = y.shape
     n = n1 * n2  # noqa: F841
@@ -76,7 +81,10 @@ def rsmooth(y):
         tol = np.inf
         while tol > 1e-5:
             DCTy = dct2(W * (y - zz) + zz)
-            p = fminbound(GCVscore, -15, 38)
+            if do_gcv:
+                p = fminbound(GCVscore, -15, 38)
+            else:
+                _ = GCVscore(p)
             tol = norm(zz - z) / norm(z)
             zz = z
         s = 10 ** p
