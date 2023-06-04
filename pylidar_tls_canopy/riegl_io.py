@@ -25,7 +25,6 @@ import json
 import numpy as np
 from numba import njit
 
-from . import DEFAULT_RDB_ATTRIBUTES
 from . import PRR_MAX_TARGETS 
 
 
