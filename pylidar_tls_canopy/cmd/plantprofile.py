@@ -18,10 +18,6 @@ import numpy as np
 from tqdm import tqdm
 
 
-RDB_ATTRIBUTES = {'riegl.xyz': 'riegl_xyz','riegl.target_index': 'target_index', 
-                  'riegl.target_count': 'target_count'}
-
-
 def get_args():
     """
     Get the command line arguments
@@ -35,8 +31,6 @@ def get_args():
         help='Output plant profile filename (CSV)')
     argparser.add_argument('-p','--pgap_outfile', metavar='FILE', type=str, default=None,
         help='Output Pgap profile filename (CSV)')
-    argparser.add_argument('-c','--chunk_size', metavar='INT', type=int, default=100000,
-        help='Chunksize for reading rdbx files')
     argparser.add_argument('--height_resolution', metavar='FLOAT', type=float, default=0.5,
         help='Vertical resolution (height)')
     argparser.add_argument('--zenith_resolution', metavar='FLOAT', type=float, default=5,
@@ -70,6 +64,8 @@ def get_args():
     argparser.add_argument('-m','--method', metavar='STR', type=str, default='WEIGHTED', 
         choices=('WEIGHTED','FIRST','ALL','FIRSTLAST'),
         help='Method for calculating Pgap from the point clouds')
+    argparser.add_argument('-q','--query_str', metavar='STR', type=str, default=None,
+        help='Conditional statements for querying a point cloud subset')
     argparser.add_argument('-l','--leaf', action='store_true', default=False,
         help='--input_file are LEAF instrument files')
     args = argparser.parse_args()
@@ -103,8 +99,10 @@ def run():
     ground_plane = None
     if not args.leaf:
         print('Fitting the ground plane')
-        x,y,z,r = plant_profile.get_min_z_grid(args.rdbx_input, args.transform_file,
-            args.grid_extent, args.grid_resolution, grid_origin=args.grid_origin, rxp=rxp)
+        riegl_files = args.input_file if rxp else args.rdbx_input
+        x,y,z,r = plant_profile.get_min_z_grid(riegl_files, args.transform_file,
+            args.grid_extent, args.grid_resolution, grid_origin=args.grid_origin, 
+            query_str=args.query_str, rxp=rxp)
         planefit = plant_profile.plane_fit_hubers(x, y, z, w=1/r, reportfile=args.reportfile)
         ground_plane = planefit['Parameters']
 
@@ -121,7 +119,7 @@ def run():
         if not args.leaf:
             vpp.add_riegl_scan_position(args.input_file[i], args.transform_file[i], rdbx_file=args.rdbx_input[i],
                 method=args.method, min_zenith=args.min_zenith[i], max_zenith=args.max_zenith[i], max_hr=None, 
-                sensor_height=args.sensor_height)
+                sensor_height=args.sensor_height, query_str=args.query_str)
         else:
             vpp.add_leaf_scan_position(args.input_file[i], method=args.method, min_zenith=args.min_zenith[i],
                 max_zenith=args.max_zenith[i], sensor_height=args.sensor_height)

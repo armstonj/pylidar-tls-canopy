@@ -18,12 +18,6 @@ import numpy as np
 from tqdm import tqdm
 
 
-RDB_ATTRIBUTES = {'riegl.id': 'point_id', 'riegl.timestamp': 'timestamp', 'riegl.xyz': 'riegl_xyz',
-                  'riegl.target_index': 'target_index', 'riegl.target_count': 'target_count',
-                  'riegl.reflectance': 'reflectance','riegl.amplitude': 'amplitude',
-                  'riegl.deviation': 'deviation'}
-
-
 def get_args():
     """
     Get the command line arguments
@@ -35,8 +29,6 @@ def get_args():
         help='Output filename')
     argparser.add_argument('-a','--attribute', metavar='STR', type=str, default='z',
         help='Pulse or point attribute to grid')
-    argparser.add_argument('-q','--query', metavar='STR', type=str, default=None,
-        help='Query of points to include in grid')
     argparser.add_argument('-c','--chunk_size', metavar='INT', type=int, default=100000,
         help='Chunksize for reading rdbx files')
     argparser.add_argument('-r','--resolution', metavar='FLOAT', type=float, default=0.5,
@@ -51,6 +43,8 @@ def get_args():
         help='Input RIEGL transform dat filenames')
     argparser.add_argument('-m','--method', metavar='STR', type=str, choices=['MEAN','MAX','MIN','SUM'], default='MAX',
         help='Method to apply per grid cell')
+    argparser.add_argument('-q','--query_str', metavar='STR', type=str, default=None,
+        help='Conditional statements for querying a point cloud subset')
     args = argparser.parse_args()
 
     return args
@@ -75,18 +69,16 @@ def run():
         for fn, transform_fn in zip(args.input,args.transform_file):
 
             if fn.endswith('.rdbx'):
-                with riegl_io.RDBFile(fn, transform_file=transform_fn) as rdb:
-                    while rdb.point_count_current < rdb.point_count_total:
-                        rdb.read_next_chunk()
-                        if rdb.point_count > 0:
-                            xidx = (rdb.get_chunk('x') - args.ulc[0]) // args.resolution
-                            yidx = (args.ulc[1] - rdb.get_chunk('y')) // args.resolution
-                            vals = rdb.get_chunk(args.attribute)
-                            valid = (xidx >= 0) & (xidx < ncols) & (yidx >= 0) & (yidx < nrows)
-                            grd.add_values(vals[valid], np.uint16(xidx[valid]), np.uint16(yidx[valid]), 0, method=args.method)
-        
+                
+                with riegl_io.RDBFile(fn, transform_file=transform_fn, query_str=args.query_str) as rdb:
+                    xidx = (rdb.get_data('x') - args.ulc[0]) // args.resolution
+                    yidx = (args.ulc[1] - rdb.get_data('y')) // args.resolution
+                    vals = rdb.get_data(attribute)
+                    valid = (xidx >= 0) & (xidx < ncols) & (yidx >= 0) & (yidx < nrows)
+                    grd.add_values(vals[valid], np.uint16(xidx[valid]), np.uint16(yidx[valid]), 0, method=args.method)
+
             elif fn.endswith('.rxp'):
-                with riegl_io.RXPFile(fn, transform_file=transform_fn) as rxp:
+                with riegl_io.RXPFile(fn, transform_file=transform_fn, query_str=args.query_str) as rxp:
                     if args.attribute in rxp.pulses:
                         return_as_point_attribute = False
                     else:

@@ -142,68 +142,31 @@ class VoxelGrid:
         else:
             self.ground = np.zeros(z.shape, dtype=bool)    
 
-    def add_riegl_scan_position(self, rxp_file, transform_file, rdbx_file=None, 
-        chunk_size=10000000):
-        """
-        Add a scan position using rdbx and rxp
-        """
-        if rdbx_file is None:
-            self.add_riegl_scan_position_rxp(rxp_file, transform_file, points=True)
-        else:
-            self.add_riegl_scan_position_rxp(rxp_file, transform_file, points=False)
-            self.add_riegl_scan_position_rdbx(rdbx_file, transform_file, chunk_size=chunk_size)
-
-        self.classify_ground(self.points['x'], self.points['y'],
-                    self.points['z'], self.count)
-
-    def add_riegl_scan_position_rdbx(self, rdbx_file, transform_file, chunk_size=10000000):
-        """
-        Add a scan position point data using rdbx
-        """
-        rdb_attributes = {'riegl.xyz': 'riegl_xyz','riegl.target_index': 'target_index',
-            'riegl.target_count': 'target_count', 'riegl.scan_line_index': 'scanline', 
-            'riegl.shot_index_line': 'scanline_idx'} 
-        with riegl_io.RDBFile(rdbx_file, chunk_size=chunk_size, attributes=rdb_attributes,
-            transform_file=transform_file) as rdb:
-
-            dtype_list = []
-            for name in ('x','y','z'):
-                dtype_list.append((str(name), '<f8', rdb.max_target_count))
-            npulses = self.count.shape[0]
-            self.points = np.empty(npulses, dtype=dtype_list)
-
-            while rdb.point_count_current < rdb.point_count_total:
-                rdb.read_next_chunk()
-                if rdb.point_count > 0:
-                    index = rdb.get_chunk('target_index')
-                    scanline = rdb.get_chunk('scanline')
-                    scanline_idx = rdb.get_chunk('scanline_idx')
-                    for name in ('x','y','z'):
-                        tmp = rdb.get_chunk(name)
-                        riegl_io.get_rdbx_points_by_rxp_pulse(tmp, index, scanline, scanline_idx,
-                            self.pulse_scanline, self.pulse_scanline_idx, self.points[name])
-
-    def add_riegl_scan_position_rxp(self, rxp_file, transform_file, points=True):
+    def add_riegl_scan_position(self, rxp_file, transform_file, rdbx_file=None, query_str=None):
         """
         Add a scan position using rxp
-        VZ400 and/or pulse rate <=300 kHz only
         """
-        with riegl_io.RXPFile(rxp_file, transform_file=transform_file) as rxp:
+        with riegl_io.RXPFile(rxp_file, transform_file=transform_file, query_str=query_str) as rxp:
             self.count = rxp.get_data('target_count')
-            
+
             self.dx = rxp.get_data('beam_direction_x')
             self.dy = rxp.get_data('beam_direction_y')
             self.dz = rxp.get_data('beam_direction_z')
-            
-            self.x0 = rxp.transform[3,0] 
+
+            self.x0 = rxp.transform[3,0]
             self.y0 = rxp.transform[3,1]
             self.z0 = rxp.transform[3,2]
 
-            if points:
-                self.points = rxp.get_points_by_pulse(['x','y','z'])
+            self.pulse_scanline = rxp.get_data('scanline')
+            self.pulse_scanline_idx = rxp.get_data('scanline_idx')
+
+            if rdbx_file:
+                with riegl_io.RDBFile(rdbx_file, transform_file=transform_file, query_str=query_str) as rdb:
+                    self.points = rdb.get_points_by_pulse(['x','y','z'], self.pulse_scanline, self.pulse_scanline_idx)
             else:
-                self.pulse_scanline = rxp.get_data('scanline')
-                self.pulse_scanline_idx = rxp.get_data('scanline_idx')
+                self.points = rxp.get_points_by_pulse(['x','y','z'])
+
+        self.classify_ground(self.points['x'], self.points['y'], self.points['z'], self.count)
 
     def _init_voxel_grid(self, bounds, voxelsize):
         """

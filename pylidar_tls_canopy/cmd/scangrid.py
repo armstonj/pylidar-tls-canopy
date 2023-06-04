@@ -27,8 +27,8 @@ def get_args():
         help='Output filename')
     argparser.add_argument('-a','--attribute', metavar='STR', type=str, default='range',
         help='Pulse or point attribute to grid')
-    argparser.add_argument('-q','--query', metavar='STR', type=str, default=None,
-        help='Query of points to include in grid')
+    argparser.add_argument('-q','--query_str', metavar='STR', type=str, default=None,
+        help='Conditional statements for querying a point cloud subset')
     argparser.add_argument('-c','--chunk_size', metavar='INT', type=int, default=100000,
         help='Chunksize for reading rdbx files')
     argparser.add_argument('-p','--pose_file', metavar='FILE', type=str,
@@ -54,24 +54,20 @@ def run():
 
     if args.input.endswith('.rdbx'):
 
-        with riegl_io.RDBFile(args.input, chunk_size=args.chunk_size, query_str=args.query, transform_file=args.transform_file) as rdb:
-            with grid.LidarGrid(rdb.maxc+1, rdb.maxr+1, 0, rdb.maxr, nvars=rdb.max_target_count) as grd:
-                with tqdm(total=rdb.point_count_total) as pbar:
-                    while rdb.point_count_current < rdb.point_count_total:
-                        rdb.read_next_chunk()
-                        if rdb.point_count > 0:
-                            xidx = rdb.get_chunk('scanline')
-                            yidx = rdb.get_chunk('scanline_idx') 
-                            zidx = rdb.get_chunk('target_index') - 1
-                            vals = rdb.get_chunk(args.attribute)
-                            grd.insert_values(vals, xidx, yidx, zidx)
-                        pbar.update(rdb.point_count)
+        with riegl_io.RDBFile(args.input, transform_file=args.transform_file, pose_file=args.pose_file, query_str=args.query_str) as rdb:
+            nvars = rdb.max_target_count
+            zidx = rdb.get_data('target_index') - 1
+            with grid.LidarGrid(rdb.maxc+1, rdb.maxr+1, 0, rdb.maxr, nvars=nvars) as grd:
+                xidx = rdb.get_data('scanline')
+                yidx = rdb.get_data('scanline_idx')
+                vals = rdb.get_data(args.attribute)
+                grd.insert_values(vals, xidx, yidx, zidx)
                 descriptions = [f'Return {i+1:d}' for i in range(rdb.max_target_count)]
                 grd.write_grid(args.output, descriptions=descriptions)
 
     elif args.input.endswith('.rxp'):
 
-        with riegl_io.RXPFile(args.input, transform_file=args.transform_file, pose_file=args.pose_file) as rxp:
+        with riegl_io.RXPFile(args.input, transform_file=args.transform_file, pose_file=args.pose_file, query_str=args.query_str) as rxp:
             if args.attribute in rxp.pulses:
                 return_as_point_attribute = False
                 nvars = 1
