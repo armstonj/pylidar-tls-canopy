@@ -146,7 +146,7 @@ class Jupp2009:
         """
         min_zenith_r = np.radians(min_zenith)
         max_zenith_r = np.radians(max_zenith)
-        cols = ['target_index','zenith','azimuth','target_count','h1','h2']
+        cols = ['zenith','azimuth','target_count','h1','h2']
 
         with leaf_io.LeafScanFile(leaf_file, sensor_height=sensor_height) as leaf:
             self.datetime = leaf.datetime
@@ -155,12 +155,12 @@ class Jupp2009:
                 for col in cols:
                     data[col] = leaf.data[col].to_numpy()
                 for n,height in enumerate(['h1','h2'], start=1):
-                    index = np.full(data[height].shape, n, dtype=np.uint8)
+                    target_index = np.full(data[height].shape, n, dtype=np.uint8)
                     idx = ((data['zenith'] >= min_zenith_r) & 
                            (data['zenith'] < max_zenith_r) & 
                            ~np.isnan(data[height]))
                     if np.any(idx):
-                        self.add_targets(data[height][idx], data['target_index'][idx], 
+                        self.add_targets(data[height][idx], target_index[idx], 
                             data['target_count'][idx], data['zenith'][idx], 
                             data['azimuth'][idx], method=method)
 
