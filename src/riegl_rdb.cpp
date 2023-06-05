@@ -197,7 +197,7 @@ int rieglId_cmpfunc(const void * a, const void * b)
 static PyObject *rieglrdb_readFile(PyObject *self, PyObject *args)
 {
     char *pszFname = NULL;
-    int bSort = 1;
+    int bSort = 0;
     RDBContext *pContext = NULL;
     RDBPointcloud *pPointCloud = NULL;
     RDBPointcloudQuerySelect *pQuerySelect = NULL;
