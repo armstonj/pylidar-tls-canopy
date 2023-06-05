@@ -79,9 +79,11 @@ class RDBFile:
         Read file and get global stats
         """
         self.meta, points = riegl_rdb.readFile(self.filename)
-
+        
         self.points = {}
         if self.query_str is not None:
+            idx = np.lexsort((points['target_index'],points['scanline_idx'],points['scanline']))
+            points = points[idx]
             valid = self.run_query(points)
             points = points[valid]
             self.points['target_index'],self.points['target_count'] = reindex_targets(points['target_index'],
