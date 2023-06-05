@@ -29,7 +29,7 @@ from . import PRR_MAX_TARGETS
 
 
 class RDBFile:
-        def __init__(self, filename, transform_file=None, pose_file=None, query_str=None):
+    def __init__(self, filename, transform_file=None, pose_file=None, query_str=None):
         self.filename = filename
         if transform_file is not None:
             self.transform = read_transform_file(transform_file)
@@ -48,20 +48,20 @@ class RDBFile:
     def __exit__(self, type, value, traceback):
         pass
             
-    def run_query(self):
+    def run_query(self, points):
         """
         Query the points array
         """
-        if not isinstance(query_str, list):
-            query_str = [query_str]
+        if not isinstance(self.query_str, list):
+            self.query_str = [self.query_str]
 
-        r = re.compile(r'((?:\(|))\s*([a-z]+)\s*(<|>|==|>=|<=|!=)\s*([-+]?\d*\.\d+|\d+)\s*((?:\)|))')
-        valid = np.ones(self.points.shape[0], dtype=bool)
-        for q in query_str:
+        r = re.compile(r'((?:\(|))\s*([a-z]+)\s*(<|>|==|>=|<=|!=)\s*([-+]?\d+(?:\.\d+)?)\s*((?:\)|))')
+        valid = np.ones(points.shape[0], dtype=bool)
+        for q in self.query_str:
             m = r.match(q)
             if m is not None:
-                if m.group(2) in self.points:
-                    q_str = f'self.points[{m.group(2)}] {m.group(3)} {m.group(4)}'
+                if m.group(2) in points.dtype.names:
+                    q_str = f'(points[\'{m.group(2)}\'] {m.group(3)} {m.group(4)})'
                 else:
                     msg = f'{m.group(2)} is not a valid point attribute name'
                     print(msg)
@@ -82,28 +82,20 @@ class RDBFile:
 
         self.points = {}
         if self.query_str is not None:
-            target_count = np.repeat(pulses['target_count'], pulses['target_count'])
-            scanline = np.repeat(pulses['scanline'], pulses['target_count'])
-            scanline_idx = np.repeat(pulses['scanline_idx'], pulses['target_count'])
-            valid = self.run_query()
+            valid = self.run_query(points)
             points = points[valid]
             self.points['target_index'],self.points['target_count'] = reindex_targets(points['target_index'],
                 points['target_count'], points['scanline'], points['scanline_idx'])
 
-        if self.transform_file is not None:
-            self.transform = read_transform_file(self.transform_file)
-        else:
-            pose = self.get_meta('riegl.pose_estimation')
-            self.transform = calc_transform_matrix(pose['orientation']['pitch'],
-                pose['orientation']['roll'], pose['orientation']['yaw'])
-
         if self.transform is not None:
-            xyz = np.vstack((points['x'], points['y'], points['z'])).T
             x_t,y_t,z_t = apply_transformation(points['x'], points['y'], points['z'],
-                points['x'].shape[0], self.transform, translate=True)
-            self.points['x'] = x_t
-            self.points['y'] = y_t
-            self.points['z'] = z_t
+                points['x'].shape[0], self.transform)
+            self.points['x'] = x_t + self.transform[3,0] 
+            self.points['y'] = y_t + self.transform[3,1]
+            self.points['z'] = z_t + self.transform[3,2]
+            _, self.points['zenith'], self.points['azimuth'] = xyz2rza(x_t, y_t, z_t)
+        else:
+            _, self.points['zenith'], self.points['azimuth'] = xyz2rza(points['x'], points['y'], points['z']) 
         self.points['valid'] = (points['scanline'] >= 0)
 
         for name in points.dtype.names:
@@ -186,20 +178,20 @@ class RXPFile:
     def __exit__(self, type, value, traceback):
         pass
 
-    def run_query(self):
+    def run_query(self, points):
         """
         Query the points array
         """
-        if not isinstance(query_str, list):
-            query_str = [query_str]
+        if not isinstance(self.query_str, list):
+            self.query_str = [self.query_str]
 
-        r = re.compile(r'((?:\(|))\s*([a-z]+)\s*(<|>|==|>=|<=|!=)\s*([-+]?\d*\.\d+|\d+)\s*((?:\)|))')
-        valid = np.ones(self.points.shape[0], dtype=bool)
-        for q in query_str:
+        r = re.compile(r'((?:\(|))\s*([a-z]+)\s*(<|>|==|>=|<=|!=)\s*([-+]?\d+(?:\.\d+)?)\s*((?:\)|))')
+        valid = np.ones(points.shape[0], dtype=bool)
+        for q in self.query_str:
             m = r.match(q)
             if m is not None:
-                if m.group(2) in self.points:
-                    q_str = f'self.points[{m.group(2)}] {m.group(3)} {m.group(4)}' 
+                if m.group(2) in points.dtype.names:
+                    q_str = f'(points[\'{m.group(2)}\'] {m.group(3)} {m.group(4)})' 
                 else:
                     msg = f'{m.group(2)} is not a valid point attribute name'
                     print(msg)
@@ -221,7 +213,7 @@ class RXPFile:
         self.points = {}
         self.pulses = {}
         if self.query_str is not None:
-            valid = self.run_query()
+            valid = self.run_query(points)
             points = points[valid]
            
             target_count = np.repeat(pulses['target_count'], pulses['target_count'])
@@ -240,6 +232,8 @@ class RXPFile:
 
             self.pulses['target_count'] = np.zeros(pulses.shape[0], dtype=np.uint8)         
             self.pulses['target_count'][idx] = new_target_count[point_sort_idx][first]
+        else:
+            self.pulses['target_count'] = pulses['target_count']
 
         if self.transform is None:
             if 'PITCH' in self.meta:
@@ -255,13 +249,12 @@ class RXPFile:
         self.pulses['valid'] = pulses['scanline'] >= 0
 
         if self.transform is not None:
-            xyz = np.vstack((points['x'], points['y'], points['z'])).T
             x_t,y_t,z_t = apply_transformation(points['x'], points['y'], points['z'], 
-                points['x'].shape[0], self.transform, translate=True)
-            self.points['x'] = x_t
-            self.points['y'] = y_t
-            self.points['z'] = z_t
-        self.points['valid'] = np.repeat(pulses['scanline'], pulses['target_count']) >= 0
+                points['x'].shape[0], self.transform)
+            self.points['x'] = x_t + self.transform[3,0]
+            self.points['y'] = y_t + self.transform[3,1]
+            self.points['z'] = z_t + self.transform[3,2]
+        self.points['valid'] = np.repeat(pulses['scanline'], self.pulses['target_count']) >= 0
 
         for name in pulses.dtype.names:
             if name not in self.pulses:
