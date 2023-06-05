@@ -262,9 +262,6 @@ class Jupp2009:
         if total_pai is None:
             hpp_pai = self.calcHingePlantProfiles()
             total_pai = np.max(hpp_pai)
-        elif not isinstance(total_pai, float):
-            print('Total PAI has not been defined')
-            sys.exit()
          
         pai = total_pai * ratio
 
