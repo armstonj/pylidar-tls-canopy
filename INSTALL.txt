@@ -13,7 +13,7 @@ Prerequisites
     
 To install pylidar-tls-canopy you will need the packages listed in the environment.yml file
 
-For RiVLib, you will also need a C compiler that is compatible. RiVLib is not available for MacOS.
+For RiVLib and RDBLib, you will also need a C compiler that is compatible. RiVLib is not available for MacOS.
 
 The use of RIEGL proprietary formats requires the following environment variables to be set before building:
     export RIVLIB_ROOT="/RiVLibRootDirectory"
