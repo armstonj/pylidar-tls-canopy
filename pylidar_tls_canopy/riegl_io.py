@@ -19,6 +19,7 @@ try:
 except ImportError:
     print('RIEGL RiVlib is not available')
 
+import os
 import re
 import sys
 import json
@@ -98,7 +99,13 @@ class RDBFile:
             _, self.points['zenith'], self.points['azimuth'] = xyz2rza(x_t, y_t, z_t)
         else:
             _, self.points['zenith'], self.points['azimuth'] = xyz2rza(points['x'], points['y'], points['z']) 
-        self.points['valid'] = (points['scanline'] >= 0)
+        
+        valid = (points['scanline'] >= 0)
+        if not np.any(valid):
+            self.points['valid'] = np.ones(points.shape[0], dtype=bool)
+            fn = os.path.basename(self.filename)
+            msg = f'No positive scanline values in {fn}. RDBX files require RiScanPro version >= 2.15.'
+            print(msg)
 
         for name in points.dtype.names:
             if name not in self.points:
