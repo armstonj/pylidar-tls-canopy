@@ -30,8 +30,6 @@ def get_args():
         help='Input RIEGL rdbx filenames (must match rxp filename order)')
     argparser.add_argument('-n','--name', metavar='STR', type=str, default='voxelgrid',
         help='Output voxel grid name')
-    argparser.add_argument('-c','--chunk_size', metavar='INT', type=int, default=1000000,
-        help='Chunksize for reading rdbx files')
     argparser.add_argument('-v','--voxelsize', metavar='FLOAT', type=float, default=1.0,
         help='Voxel size (m)')
     argparser.add_argument('-b','--bounds', metavar='FLOAT', type=float, default=[-25,-25,-15,25,25,45], nargs=6,
@@ -48,6 +46,8 @@ def get_args():
         help='Voxelgrid nodata value')
     argparser.add_argument('-o','--outdir', metavar='DIR', type=str, default='.',
         help='Path to directory to write outputs')
+    argparser.add_argument('-q','--query_str', metavar='STR', type=str, default=None,
+        help='Conditional statements for querying a point cloud subset')
     args = argparser.parse_args()
 
     return args
@@ -85,7 +85,7 @@ def run():
         name = f'{args.name}_{os.path.splitext(fn)[0]}'
         vgrid_i = voxelization.VoxelGrid(dtm_filename=config['dtm'])
         vgrid_i.add_riegl_scan_position(rxp_fn, args.transform_fn[i], 
-            rdbx_file=args.rdbx_fn[i], chunk_size=args.chunk_size)
+            rdbx_file=args.rdbx_fn[i], query_str=args.query_str)
         vgrid_i.voxelize_scan(config['bounds'], config['voxelsize'], save_counts=True)
         prefix = f'{args.outdir}/{name}'
         vgrid_i.write_grids(prefix)

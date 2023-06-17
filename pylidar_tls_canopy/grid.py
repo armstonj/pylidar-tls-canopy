@@ -145,65 +145,42 @@ def add_by_idx(values, xidx, yidx, zidx, nodata, outgrid, cntgrid, method='SUM')
         cntgrid[zidx[i],yidx[i],xidx[i]] += 1
 
 
-def grid_rdbx_cartesian(rdbx_list, transform_list, res, attribute='z', method='MAX', extent=[50,50], 
-    ulc=[-25,25], planefit=None):
-    """
-    Wrapper function to grid the REIGL point data on a cartesian grid
-    """
-    if isinstance(rdbx_list, str):
-        rdbx_list = [rdbx_list]
-        transform_list = [transform_list]
-    ncols = int( extent[0] // res + 1 )
-    nrows = int( extent[1] // res + 1 )
-    with LidarGrid(ncols, nrows, ulc[0], ulc[1], resolution=res, init_cntgrid=True) as grd:    
-        for rdbx_fn,transform_fn in zip(rdbx_list,transform_list):
-            with riegl_io.RDBFile(rdbx_fn, transform_file=transform_fn) as rdb:
-                while rdb.point_count_current < rdb.point_count_total:
-                    rdb.read_next_chunk()
-                    if rdb.point_count > 0:
-                        xidx = (rdb.get_chunk('x') - ulc[0]) // res
-                        yidx = (ulc[1] - rdb.get_chunk('y')) // res
-                        if planefit is not None:
-                            vals = rdb.get_chunk('z') - (planefit['Parameters'][1] * rdb.get_chunk('x') +
-                                planefit['Parameters'][2] * rdb.get_chunk('y') + planefit['Parameters'][0]) 
-                        else:
-                            vals = rdb.get_chunk(attribute)
-                        valid = (xidx >= 0) & (xidx < ncols) & (yidx >= 0) & (yidx < nrows)
-                        grd.add_values(vals[valid], np.uint16(xidx[valid]), np.uint16(yidx[valid]), 
-                            0, method=method)
-        grd.finalize_grid(method=method)
-        scan_grid = grd.get_grid()
-    return scan_grid
-
-
-def grid_rxp_cartesian(rxp_list, transform_list, res, attribute='z', method='MAX', extent=[50,50], 
-    ulc=[-25,25], planefit=None):
+def grid_riegl_cartesian(riegl_list, transform_list, res, attribute='z', method='MAX', extent=[50,50], 
+    ulc=[-25,25], planefit=None, query_str=None, driver='rdbx'):
     """
     Wrapper function to grid the RIEGL pulse data on a cartesian grid
     """
-    if isinstance(rxp_list, str):
-        rxp_list = [rxp_list]
+    if isinstance(riegl_list, str):
+        riegl_list = [riegl_list]
         transform_list = [transform_list]
     ncols = int( extent[0] // res + 1 )
     nrows = int( extent[1] // res + 1 )
     with LidarGrid(ncols, nrows, ulc[0], ulc[1], resolution=res, init_cntgrid=True) as grd:
-        for rxp_fn,transform_fn in zip(rxp_list,transform_list):
-            with riegl_io.RXPFile(rxp_fn, transform_file=transform_fn) as rxp:
-                if attribute in rxp.pulses:
-                    return_as_point_attribute = False
-                else:
-                    return_as_point_attribute = True
-                xidx = (rxp.get_data('x', return_as_point_attribute=return_as_point_attribute) - ulc[0]) // res
-                yidx = (ulc[1] - rxp.get_data('y', return_as_point_attribute=return_as_point_attribute)) // res
-                if planefit is not None:
-                    vals = rxp.get_data('z', return_as_point_attribute=return_as_point_attribute) - (planefit['Parameters'][0] + 
-                        planefit['Parameters'][1] * rxp.get_data('x', return_as_point_attribute=return_as_point_attribute) + 
-                        planefit['Parameters'][2] * rxp.get_data('y', return_as_point_attribute=return_as_point_attribute))
-                else:
-                    vals = rxp.get_data(attribute, return_as_point_attribute=return_as_point_attribute)
-                valid = (xidx >= 0) & (xidx < ncols) & (yidx >= 0) & (yidx < nrows)
-                grd.add_values(vals[valid], np.uint16(xidx[valid]), np.uint16(yidx[valid]), 
-                    0, method=method)
+        for fn,transform_fn in zip(riegl_list,transform_list):
+            data = {}
+            var = ('x','y','z',attribute)
+            if driver == 'rxp':
+                with riegl_io.RXPFile(fn, transform_file=transform_fn, query_str=query_str) as rxp:
+                    return_as_point_attribute = False if attribute in rxp.pulses else True
+                    for col in set(var):
+                        data[col] = rxp.get_data(col, return_as_point_attribute=return_as_point_attribute)
+            elif driver == 'rdbx':
+                with riegl_io.RDBFile(fn, transform_file=transform_fn, query_str=query_str) as rdb:
+                    for col in set(var):
+                        data[col] = rdb.get_data(col)
+            else:
+                msg = f'{driver} is not a valid driver name'
+                raise ValueError(msg)
+
+            xidx = (data['x'] - ulc[0]) // res
+            yidx = (ulc[1] - data['y']) // res
+            if planefit is not None:
+                vals = data['z'] - (planefit['Parameters'][0] + planefit['Parameters'][1] * data['x'] + 
+                    planefit['Parameters'][2] * data['y'])
+            else:
+                vals = data[attribute]
+            valid = (xidx >= 0) & (xidx < ncols) & (yidx >= 0) & (yidx < nrows)
+            grd.add_values(vals[valid], np.uint16(xidx[valid]), np.uint16(yidx[valid]), 0, method=method)
         grd.finalize_grid(method=method) 
         scan_grid = grd.get_grid()
     return scan_grid
@@ -231,88 +208,75 @@ def grid_leaf_spherical(leaf_fn, resolution, attribute='range',
     return scan_grid
 
 
-def grid_rdbx_spherical(rdbx_fn, transform_fn, resolution, attribute='range', method='MEAN'):
-    """
-    Wrapper function to grid the REIGL point data on a spherical grid
-    """
-    res = np.radians(resolution)
-    ncols = int( (2 * np.pi) // res + 1 )
-    nrows = int( np.pi // res + 1 )
-    with riegl_io.RDBFile(rdbx_fn, transform_file=transform_fn) as rdb:
-        with LidarGrid(ncols, nrows, 0, np.pi, resolution=res, init_cntgrid=True) as grd:
-            while rdb.point_count_current < rdb.point_count_total:
-                rdb.read_next_chunk()
-                if rdb.point_count > 0:
-                    xidx = np.int16(rdb.get_chunk('azimuth') // res)
-                    yidx = np.int16(rdb.get_chunk('zenith') // res)
-                    vals = rdb.get_chunk(attribute)
-                    valid = (xidx >= 0) & (xidx < ncols) & (yidx >= 0) & (yidx < nrows)
-                    grd.add_values(vals[valid], xidx[valid], yidx[valid], 0, method=method)
-            grd.finalize_grid(method=method)
-            scan_grid = grd.get_grid()
-    return scan_grid
-
-
-def grid_rxp_spherical(rxp_fn, transform_fn, resolution, attribute='zenith', method='MEAN'):
+def grid_riegl_spherical(fn, transform_fn, resolution, attribute='zenith', method='MEAN', 
+    query_str=None, driver='rdbx'):
     """
     Wrapper function to grid the REIGL pulse data on a spherical grid
     """
     res = np.radians(resolution)
     ncols = int( (2 * np.pi) // res + 1 )
     nrows = int( np.pi // res + 1 )
-    with riegl_io.RXPFile(rxp_fn, transform_file=transform_fn) as rxp:
-        if attribute in rxp.pulses: 
-            return_as_point_attribute = False
-        else:
-            return_as_point_attribute = True
-        with LidarGrid(ncols, nrows, 0, np.pi, resolution=res, init_cntgrid=True) as grd:
-            xidx = rxp.get_data('azimuth', return_as_point_attribute=return_as_point_attribute) // res
-            yidx = rxp.get_data('zenith', return_as_point_attribute=return_as_point_attribute) // res
-            vals = rxp.get_data(attribute, return_as_point_attribute=return_as_point_attribute)
-            valid = (xidx >= 0) & (xidx < ncols) & (yidx >= 0) & (yidx < nrows)
-            grd.add_values(vals[valid], np.uint16(xidx[valid]), np.uint16(yidx[valid]), 
-                0, method=method)
-            grd.finalize_grid(method=method)
-            scan_grid = grd.get_grid()
+
+    data = {}
+    var = ('azimuth','zenith',attribute)
+    if driver == 'rxp':
+        with riegl_io.RXPFile(fn, transform_file=transform_fn, query_str=query_str) as rxp:
+            return_as_point_attribute = False if attribute in rxp.pulses else True
+            for col in set(var):
+                data[col] = rxp.get_data(col, return_as_point_attribute=return_as_point_attribute)
+    elif driver == 'rdbx':
+        with riegl_io.RDBFile(fn, transform_file=transform_fn, query_str=query_str) as rdb:
+            for col in set(var):
+                data[col] = rdb.get_data(col)
+    else:
+        msg = f'{driver} is not a valid driver name'
+        raise ValueError(msg)
+
+    with LidarGrid(ncols, nrows, 0, np.pi, resolution=res, init_cntgrid=True) as grd:
+        xidx = data['azimuth'] // res
+        yidx = data['zenith'] // res
+        valid = (xidx >= 0) & (xidx < ncols) & (yidx >= 0) & (yidx < nrows)
+        grd.add_values(data[attribute][valid], np.uint16(xidx[valid]), 
+            np.uint16(yidx[valid]), 0, method=method)
+        grd.finalize_grid(method=method)
+        scan_grid = grd.get_grid()
     return scan_grid
 
 
-def grid_rdbx_scan(rdbx_fn, transform_fn=None, attribute='reflectance'):
-    """
-    Wrapper function to grid the REIGL point data on a scan grid
-    """
-    with riegl_io.RDBFile(rdbx_fn, chunk_size=100000, transform_file=transform_fn) as rdb:
-        with LidarGrid(rdb.maxc+1, rdb.maxr+1, 0, rdb.maxr, count=rdb.max_target_count) as grd:
-            while rdb.point_count_current < rdb.point_count_total:
-                rdb.read_next_chunk()
-                if rdb.point_count > 0:
-                    xidx = rdb.get_chunk('scanline')
-                    yidx = rdb.get_chunk('scanline_idx')
-                    zidx = rdb.get_chunk('target_index') - 1
-                    vals = rdb.get_chunk(attribute)
-                    grd.insert_values(vals, xidx, yidx, zidx)
-            scan_grid = grd.get_grid()
-    return scan_grid
-
-
-def grid_rxp_scan(rxp_fn, transform_fn=None, attribute='target_count'):
+def grid_riegl_scan(fn, transform_fn=None, attribute='reflectance', query_str=None, driver='rdbx'):
     """
     Wrapper function to grid the REIGL pulse data on a scan grid
     """
-    with riegl_io.RXPFile(rxp_fn, transform_file=transform_fn) as rxp:
-        if attribute in rxp.pulses:
-            return_as_point_attribute = False
-            nvars = 1
-            zidx = 0
-        else:
-            return_as_point_attribute = True
-            nvars = rxp.max_target_count
-            zidx = rxp.get_data('target_index') - 1
-        with LidarGrid(rxp.maxc+1, rxp.maxr+1, 0, rxp.maxr, count=nvars) as grd:
-            xidx = rxp.get_data('scanline', return_as_point_attribute=return_as_point_attribute)
-            yidx = rxp.get_data('scanline_idx', return_as_point_attribute=return_as_point_attribute)
-            vals = rxp.get_data(attribute, return_as_point_attribute=return_as_point_attribute)
-            grd.insert_values(vals, xidx, yidx, zidx)
-            scan_grid = grd.get_grid()
-    return scan_grid
+    data = {}
+    var = ('scanline','scanline_idx',attribute)
+    if driver == 'rxp':
+        with riegl_io.RXPFile(fn, transform_file=transform_fn, query_str=query_str) as rxp:
+            if attribute in rxp.pulses:
+                return_as_point_attribute = False
+                nvars = 1
+                zidx = 0 
+            else:
+                return_as_point_attribute = True
+                nvars = rxp.max_target_count
+                zidx = rxp.get_data('target_index') - 1
+            maxc = rxp.maxc
+            maxr = rxp.maxr
+            for col in set(var):
+                data[col] = rxp.get_data(col, return_as_point_attribute=return_as_point_attribute)
+    elif driver == 'rdbx':
+        with riegl_io.RDBFile(fn, transform_file=transform_fn, query_str=query_str) as rdb:
+            maxc = rdb.maxc
+            maxr = rdb.maxr
+            nvars = rdb.max_target_count
+            for col in set(var):
+                data[col] = rdb.get_data(col)
+            zidx = rdb.get_data('target_index') - 1
+    else:
+        msg = f'{driver} is not a valid driver name'
+        raise ValueError(msg)
 
+    with LidarGrid(maxc+1, maxr+1, 0, maxr, count=nvars) as grd:
+        grd.insert_values(data[attribute], data['scanline'], data['scanline_idx'], zidx)
+        scan_grid = grd.get_grid()
+
+    return scan_grid

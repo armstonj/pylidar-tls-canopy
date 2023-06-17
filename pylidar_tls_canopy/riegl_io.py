@@ -10,7 +10,6 @@ October 2022
 """
 
 try:
-    import riegl.rdb
     import riegl_rdb
 except ImportError:
     print('RIEGL RDBlib is not available')
@@ -20,14 +19,152 @@ try:
 except ImportError:
     print('RIEGL RiVlib is not available')
 
+import os
 import re
 import sys
 import json
 import numpy as np
 from numba import njit
 
-from . import DEFAULT_RDB_ATTRIBUTES
 from . import PRR_MAX_TARGETS 
+
+
+class RDBFile:
+    def __init__(self, filename, transform_file=None, pose_file=None, query_str=None):
+        self.filename = filename
+        if transform_file is not None:
+            self.transform = read_transform_file(transform_file)
+        elif pose_file is not None:
+            with open(pose_file,'r') as f:
+                pose = json.load(f)
+            self.transform = calc_transform_matrix(pose['pitch'], pose['roll'], pose['yaw'])
+        else:
+            self.transform = None
+        self.query_str = query_str
+        self.read_file()
+
+    def __enter__(self):
+        return self
+        
+    def __exit__(self, type, value, traceback):
+        pass
+            
+    def run_query(self, points):
+        """
+        Query the points array
+        """
+        if not isinstance(self.query_str, list):
+            self.query_str = [self.query_str]
+
+        r = re.compile(r'((?:\(|))\s*([a-z]+)\s*(<|>|==|>=|<=|!=)\s*([-+]?\d+(?:\.\d+)?)\s*((?:\)|))')
+        valid = np.ones(points.shape[0], dtype=bool)
+        for q in self.query_str:
+            m = r.match(q)
+            if m is not None:
+                if m.group(2) in points.dtype.names:
+                    q_str = f'(points[\'{m.group(2)}\'] {m.group(3)} {m.group(4)})'
+                else:
+                    msg = f'{m.group(2)} is not a valid point attribute name'
+                    print(msg)
+                    return
+                try:
+                    valid &= eval(q_str)
+                except SyntaxError:
+                    msg = f'{q} is not a valid query string'
+                    print(msg)
+
+        return valid
+
+    def read_file(self):
+        """
+        Read file and get global stats
+        """
+        self.meta, points = riegl_rdb.readFile(self.filename)
+        
+        self.points = {}
+        if self.query_str is not None:
+            idx = np.lexsort((points['target_index'],points['scanline_idx'],points['scanline']))
+            points = points[idx]
+            valid = self.run_query(points)
+            points = points[valid]
+            self.points['target_index'],self.points['target_count'] = reindex_targets(points['target_index'],
+                points['target_count'], points['scanline'], points['scanline_idx'])
+
+        if self.transform is not None:
+            x_t,y_t,z_t = apply_transformation(points['x'], points['y'], points['z'],
+                points['x'].shape[0], self.transform)
+            self.points['x'] = x_t + self.transform[3,0] 
+            self.points['y'] = y_t + self.transform[3,1]
+            self.points['z'] = z_t + self.transform[3,2]
+            _, self.points['zenith'], self.points['azimuth'] = xyz2rza(x_t, y_t, z_t)
+        else:
+            _, self.points['zenith'], self.points['azimuth'] = xyz2rza(points['x'], points['y'], points['z']) 
+        
+        valid = (points['scanline'] >= 0)
+        if not np.any(valid):
+            self.points['valid'] = np.ones(points.shape[0], dtype=bool)
+            fn = os.path.basename(self.filename)
+            msg = f'No positive scanline values in {fn}. RDBX files require RiScanPro version >= 2.15.'
+            print(msg)
+
+        for name in points.dtype.names:
+            if name not in self.points:
+                self.points[name] = points[name]
+
+        self.minc = 0
+        self.maxc = np.max(self.points['scanline'])
+        self.minr = 0
+        self.maxr = np.max(self.points['scanline_idx'])
+        self.max_range = np.max(self.points['range'])
+        self.max_target_count = np.max(self.points['target_count'])
+
+    def get_data(self, name):
+        """
+        Get a point attribute
+        """
+        if name in self.points:
+            data = self.points[name]
+            valid = self.points['valid']
+        else:
+            print(f'{name:} is not a point attribute')
+            sys.exit()
+
+        return data[valid]
+
+    def get_meta(self, key):
+        """
+        Get an individual metadata item
+        'riegl.pose_estimation', 'riegl.geo_tag', 'riegl.notch_filter', 'riegl.window_echo_correction',
+        'riegl.detection_probability', 'riegl.angular_notch_filter', 'riegl.pulse_position_modulation',
+        'riegl.noise_estimates', 'riegl.device', 'riegl.atmosphere', 'riegl.near_range_correction', 
+        'riegl.time_base', 'riegl.scan_pattern', 'riegl.device_geometry', 'riegl.range_statistics', 
+        'riegl.beam_geometry', 'riegl.reflectance_calculation', 'riegl.window_analysis',
+        'riegl.mta_settings', 'riegl.point_attribute_groups'        
+        """
+        return json.loads(self.meta[key])
+
+    def get_points_by_pulse(self, colnames, pulse_scanline, pulse_scanline_idx):
+        """
+        Function to reorder rdbx sourced point data according to rxp sourced pulse data
+        """
+        dtype_str = {'x':'<f8', 'y':'<f8', 'z':'<f8', 
+                     'range':'<f8'}
+        dtype_list = []
+        for name in colnames:
+            dtype_list.append((str(name), dtype_str[name], self.max_target_count))
+
+        pulse_id_rxp = pulse_scanline * np.max(pulse_scanline_idx) + pulse_scanline_idx
+        pulse_id_rdb = self.get_data('scanline') * np.max(pulse_scanline_idx) + self.get_data('scanline_idx')
+        
+        pulse_sort_idx_rxp = np.argsort(pulse_id_rxp)
+        pulse_sort_idx_rdb = np.argsort(pulse_id_rdb)
+        idx = np.searchsorted(pulse_id_rxp, pulse_id_rdb[pulse_sort_idx_rdb], sorter=pulse_sort_idx_rxp)
+
+        output = np.empty(pulse_scanline.shape[0], dtype=dtype_list)
+        for name in colnames:
+            output[idx,target_index-1] = self.get_data(name)[pulse_sort_idx_rdb]
+
+        return output
 
 
 class RXPFile:
@@ -50,20 +187,20 @@ class RXPFile:
     def __exit__(self, type, value, traceback):
         pass
 
-    def run_query(self):
+    def run_query(self, points):
         """
         Query the points array
         """
-        if not isinstance(query_str, list):
-            query_str = [query_str]
+        if not isinstance(self.query_str, list):
+            self.query_str = [self.query_str]
 
-        r = re.compile(r'((?:\(|))\s*([a-z]+)\s*(<|>|==|>=|<=|!=)\s*([-+]?\d*\.\d+|\d+)\s*((?:\)|))')
-        valid = np.ones(self.points.shape[0], dtype=bool)
-        for q in query_str:
+        r = re.compile(r'((?:\(|))\s*([a-z]+)\s*(<|>|==|>=|<=|!=)\s*([-+]?\d+(?:\.\d+)?)\s*((?:\)|))')
+        valid = np.ones(points.shape[0], dtype=bool)
+        for q in self.query_str:
             m = r.match(q)
             if m is not None:
-                if m.group(2) in self.points:
-                    q_str = f'self.points[{m.group(2)}] {m.group(3)} {m.group(4)}' 
+                if m.group(2) in points.dtype.names:
+                    q_str = f'(points[\'{m.group(2)}\'] {m.group(3)} {m.group(4)})' 
                 else:
                     msg = f'{m.group(2)} is not a valid point attribute name'
                     print(msg)
@@ -82,27 +219,35 @@ class RXPFile:
         """
         self.meta, points, pulses = riegl_rxp.readFile(self.filename)
 
+        self.points = {}
+        self.pulses = {}
         if self.query_str is not None:
+            valid = self.run_query(points)
+            points = points[valid]
+           
             target_count = np.repeat(pulses['target_count'], pulses['target_count'])
             scanline = np.repeat(pulses['scanline'], pulses['target_count'])
-            scanline_idx = np.repeat(pulses['scanline_idx'], pulses['target_count'])
-            valid = self.run_query()
-            points = points[valid]
-            target_index,target_count = reindex_targets(points['target_index'], 
+            scanline_idx = np.repeat(pulses['scanline_idx'], pulses['target_count']) 
+            self.points['target_index'],new_target_count = reindex_targets(points['target_index'], 
                 target_count[valid], scanline[valid], scanline_idx[valid])
 
-        self.minc = 0
-        self.maxc = np.max(pulses['scanline'])
-        self.minr = 0
-        self.maxr = np.max(pulses['scanline_idx'])
-        self.max_target_count = np.max(pulses['target_count'])
-        self.max_range = np.max(points['range'])
+            pulse_id = pulses['scanline'] * np.max(pulses['scanline_idx']) + pulses['scanline_idx']
+            point_id = scanline[valid] * np.max(pulses['scanline_idx']) + scanline_idx[valid]
+
+            pulse_sort_idx = np.argsort(pulse_id)
+            point_sort_idx = np.argsort(point_id)
+            first = (self.points['target_index'][point_sort_idx] == 1)
+            idx = np.searchsorted(pulse_id, point_id[point_sort_idx][first], sorter=pulse_sort_idx)
+
+            self.pulses['target_count'] = np.zeros(pulses.shape[0], dtype=np.uint8)         
+            self.pulses['target_count'][idx] = new_target_count[point_sort_idx][first]
+        else:
+            self.pulses['target_count'] = pulses['target_count']
 
         if self.transform is None:
             if 'PITCH' in self.meta:
                 self.transform = calc_transform_matrix(self.meta['PITCH'], self.meta['ROLL'], self.meta['YAW'])
         
-        self.pulses = {}
         if self.transform is not None:
             x_t,y_t,z_t = apply_transformation(pulses['beam_direction_x'], pulses['beam_direction_y'], 
                 pulses['beam_direction_z'], pulses['beam_direction_x'].shape[0], self.transform)
@@ -112,15 +257,13 @@ class RXPFile:
             _, self.pulses['zenith'], self.pulses['azimuth'] = xyz2rza(x_t, y_t, z_t)
         self.pulses['valid'] = pulses['scanline'] >= 0
 
-        self.points = {}
         if self.transform is not None:
-            xyz = np.vstack((points['x'], points['y'], points['z'])).T
             x_t,y_t,z_t = apply_transformation(points['x'], points['y'], points['z'], 
-                points['x'].shape[0], self.transform, translate=True)
-            self.points['x'] = x_t
-            self.points['y'] = y_t
-            self.points['z'] = z_t
-        self.points['valid'] = np.repeat(pulses['scanline'], pulses['target_count']) >= 0
+                points['x'].shape[0], self.transform)
+            self.points['x'] = x_t + self.transform[3,0]
+            self.points['y'] = y_t + self.transform[3,1]
+            self.points['z'] = z_t + self.transform[3,2]
+        self.points['valid'] = np.repeat(pulses['scanline'], self.pulses['target_count']) >= 0
 
         for name in pulses.dtype.names:
             if name not in self.pulses:
@@ -129,6 +272,13 @@ class RXPFile:
         for name in points.dtype.names:
             if name not in self.points:
                 self.points[name] = points[name]
+
+        self.minc = 0
+        self.maxc = np.max(self.pulses['scanline'])
+        self.minr = 0
+        self.maxr = np.max(self.pulses['scanline_idx'])
+        self.max_range = np.max(self.points['range'])
+        self.max_target_count = np.max(self.pulses['target_count'])
 
     def get_points_by_pulse(self, names):
         """
@@ -173,161 +323,6 @@ class RXPFile:
         return data[valid]
 
 
-class RDBFile:
-    def __init__(self, filename, attributes=DEFAULT_RDB_ATTRIBUTES, chunk_size=None, 
-        transform_file=None, query_str=None):
-        self.filename = filename
-        self.point_attributes = attributes
-        self.chunk_size = chunk_size
-        self.query_str = query_str
-        self.transform_file = transform_file
-        self.query = None
-        self.open_file()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, type, value, traceback):
-        self.rdb.close()
-
-    def open_file(self):
-        """
-        Open file, create attribute buffers, and get global stats
-        """
-        self.rdb = riegl.rdb.rdb_open(self.filename)
-
-        with self.rdb.stat as stat:
-            self.point_count_current = 0
-            self.point_count_total = stat.point_count_total
-            self.minx,self.miny,self.minz = stat.minimum_riegl_xyz
-            self.maxx,self.maxy,self.maxz = stat.maximum_riegl_xyz
-            if 'riegl.scan_line_index' in self.point_attributes: 
-                self.minc = stat.minimum_riegl_scan_line_index
-                self.maxc = stat.maximum_riegl_scan_line_index
-                self.minr = stat.minimum_riegl_shot_index_line
-                self.maxr = stat.maximum_riegl_shot_index_line
-            self.max_target_count = stat.maximum_riegl_target_count
-            self.max_range = np.sqrt(self.maxx**2 + self.maxy**2 + self.maxz**2)
-
-        if self.chunk_size is None:
-            self.chunk_size = self.point_count_total
-
-        self.points = {}
-        for p in self.point_attributes:
-            name = self.point_attributes[p]
-            self.points[name] = riegl.rdb.AttributeBuffer(self.rdb.point_attributes[p], self.chunk_size)
-
-        if self.transform_file is not None:
-            self.transform = read_transform_file(self.transform_file)
-        else:
-            pose = self.get_meta('riegl.pose_estimation')
-            self.transform = calc_transform_matrix(pose['orientation']['pitch'], 
-                pose['orientation']['roll'], pose['orientation']['yaw']) 
-
-    def read_next_chunk(self, reindex=False):
-        """
-        Iterate the point cloud chunk-wise
-        """
-        if self.query is None:
-            self.query = self.rdb.select(self.query_str)
-            self.point_count = 1
-            for k in self.points:
-                self.query.bind(self.points[k])
-
-        if self.point_count > 0:
-            self.point_count = self.query.next(self.chunk_size)
-            if 'riegl_xyz' in self.points:
-                points_tmp = self.points['riegl_xyz'][0:self.point_count]
-                x_t,y_t,z_t = apply_transformation(points_tmp[:,0], points_tmp[:,1],
-                    points_tmp[:,2], self.point_count, self.transform)
-                self.points['x'] = x_t + self.transform[3,0]
-                self.points['y'] = y_t + self.transform[3,1]
-                self.points['z'] = z_t + self.transform[3,2]
-                self.points['range'],self.points['zenith'],self.points['azimuth'] = xyz2rza(x_t, y_t, z_t)
-             
-                if reindex:
-                    idx = np.arange(self.point_count, dtype=np.uint32)
-                    for name in ('target_index','scanline_idx','scanline'):
-                        sidx = np.argsort(self.points[name][idx], kind='stable')
-                        idx = idx[sidx]
-                    new_target_index, new_target_count = reindex_targets(self.points['target_index'][idx], 
-                        self.points['target_count'][idx], self.points['scanline'][idx], 
-                        self.points['scanline_idx'][idx])
-                    self.points['target_index'][idx] = new_target_index
-                    self.points['target_count'][idx] = new_target_count
-            
-            self.point_count_current += self.point_count
-        else:
-            self.point_count_total = self.point_count_current
-
-    def get_chunk(self, name):
-        """
-        Return the chunk of data
-        """
-        return self.points[name][0:self.point_count]
-
-    def get_meta(self, key):
-        """
-        Get an individual metadata item
-        'riegl.pose_estimation', 'riegl.geo_tag', 'riegl.notch_filter', 'riegl.window_echo_correction',
-        'riegl.detection_probability', 'riegl.angular_notch_filter', 'riegl.pulse_position_modulation',
-        'riegl.noise_estimates', 'riegl.device', 'riegl.atmosphere', 'riegl.near_range_correction', 
-        'riegl.time_base', 'riegl.scan_pattern', 'riegl.device_geometry', 'riegl.range_statistics', 
-        'riegl.beam_geometry', 'riegl.reflectance_calculation', 'riegl.window_analysis',
-        'riegl.mta_settings', 'riegl.point_attribute_groups'        
-        """
-        return json.loads(self.rdb.meta_data[key])
-
-    def get_attr(self, key, name=None):
-        """
-        Get an individual attribute item
-        """
-        if name is not None:
-            val = self.rdb.point_attributes[key][name]
-        else:
-            val =  self.rdb.point_attributes[key]
-        return val
-
-        if self.query is None:
-            self.query = self.rdb.select(self.query_str)
-            self.point_count = 1
-            for k in self.points:
-                self.query.bind(self.points[k])
-
-    def read_point_records(self):
-        """
-        Read the entire file into a dictionary of attributes
-        """
-        rdb_attributes = {'riegl.target_index': 'target_index', 'riegl.target_count': 'target_count'}
-        points = {}
-        with riegl.rdb.rdb_open(self.filename) as rdb:
-            for riegl_points in rdb.select(self.query_str, chunk_size=self.point_count_total):
-                for k in rdb_attributes:
-                    points[rdb_attributes[k]] = riegl_points[k]
-                x_t,y_t,z_t = apply_transformation(riegl_points['riegl.xyz'][:,0], riegl_points['riegl.xyz'][:,1],
-                    riegl_points['riegl.xyz'][:,2], self.point_count_total, self.transform)
-                points['x'] = x_t + self.transform[3,0]
-                points['y'] = y_t + self.transform[3,1]
-                points['z'] = z_t + self.transform[3,2]
-                points['range'],points['zenith'],points['azimuth'] = xyz2rza(x_t, y_t, z_t)
-
-        return points
-
-
-def get_rdbx_points_by_rxp_pulse(values, target_index, scanline, scanline_idx,
-    pulse_scanline, pulse_scanline_idx, output):
-    """
-    Function to reorder rdbx sourced point data according to rxp sourced pulse data
-    """
-    pulse_id_rxp = pulse_scanline * np.max(pulse_scanline_idx) + pulse_scanline_idx
-    pulse_id_rdb = scanline * np.max(pulse_scanline_idx) + scanline_idx
-    
-    pulse_sort_idx = np.argsort(pulse_id_rxp)
-    idx = np.searchsorted(pulse_id_rxp, pulse_id_rdb, sorter=pulse_sort_idx)
-    
-    output[idx,target_index-1] = values
-
-
 @njit
 def reindex_targets(target_index, target_count, scanline, scanline_idx):
     """
@@ -348,21 +343,6 @@ def reindex_targets(target_index, target_count, scanline, scanline_idx):
             n = 1
         
     return new_target_index,new_target_count
-
-
-def get_rdb_point_attributes(filename):
-    """
-    Get point attributes
-    """
-    d = {}
-    with riegl.rdb.rdb_open(filename) as rdb:
-        for attribute in rdb.point_attributes.values():
-            group, index = rdb.point_attributes.group(attribute.name)
-            if group in d:
-                d[group].append(attribute.name)
-            else:
-                d[group] = []
-    return d
 
 
 def calc_transform_matrix(pitch, roll, yaw):
