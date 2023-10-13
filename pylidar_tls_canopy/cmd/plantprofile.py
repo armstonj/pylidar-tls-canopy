@@ -68,6 +68,8 @@ def get_args():
         help='Conditional statements for querying a point cloud subset')
     argparser.add_argument('-l','--leaf', action='store_true', default=False,
         help='--input_file are LEAF instrument files')
+    argparser.add_argument('-g','--ground_plane', action='store_true', default=False,
+        help='Model the ground elevation as a plane')
     args = argparser.parse_args()
 
     return args
@@ -97,7 +99,7 @@ def run():
 
     # Get the ground plane
     ground_plane = None
-    if not args.leaf:
+    if args.ground_plane:
         print('Fitting the ground plane')
         riegl_files = args.input_file if rxp else args.rdbx_input
         x,y,z,r = plant_profile.get_min_z_grid(riegl_files, args.transform_file,
@@ -105,10 +107,9 @@ def run():
             query_str=args.query_str, rxp=rxp)
         planefit = plant_profile.plane_fit_hubers(x, y, z, w=1/r, reportfile=args.reportfile)
         ground_plane = planefit['Parameters']
+        args.sensor_height = None
 
     # Initialize the profile
-    min_zenith_r = np.radians(args.min_zenith)
-    max_zenith_r = np.radians(args.max_zenith)
     vpp = plant_profile.Jupp2009(hres=args.height_resolution, zres=args.zenith_resolution, ares=args.azimuth_resolution, 
         min_z=min(args.min_zenith), max_z=max(args.max_zenith), min_h=0, max_h=args.max_height, ground_plane=ground_plane) 
 

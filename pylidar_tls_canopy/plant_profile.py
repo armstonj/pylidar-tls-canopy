@@ -123,13 +123,19 @@ class Jupp2009:
                 for col in point_cols:
                     points[col] = rxp.get_data(col, return_as_point_attribute=True)
 
-            if sensor_height is not None:
-                zoffset = rxp.transform[3,2] - sensor_height
+            if self.ground_plane is None:
+                if sensor_height is not None:
+                    zoffset = rxp.transform[3,2] - sensor_height
+                else:
+                    zoffset = rxp.transform[3,2]
             else:
                 zoffset = self.ground_plane[0]
-        
-        height = points['z'] - (self.ground_plane[1] * points['x'] +
-            self.ground_plane[2] * points['y'] + zoffset)
+       
+        if self.ground_plane is None:
+            height = points['z'] + zoffset
+        else: 
+            height = points['z'] - (self.ground_plane[1] * points['x'] +
+                self.ground_plane[2] * points['y'] + zoffset)
         
         idx = (points['zenith'] >= min_zenith_r) & (points['zenith'] < max_zenith_r)
         if max_hr is not None:
