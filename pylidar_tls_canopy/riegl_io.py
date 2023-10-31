@@ -100,13 +100,7 @@ class RDBFile:
         else:
             _, self.points['zenith'], self.points['azimuth'] = xyz2rza(points['x'], points['y'], points['z']) 
         
-        valid = (points['scanline'] >= 0)
-        if not np.any(valid):
-            self.points['valid'] = np.ones(points.shape[0], dtype=bool)
-            fn = os.path.basename(self.filename)
-            msg = f'No positive scanline values in {fn}. RDBX files require RiScanPro version >= 2.15.'
-            print(msg)
-
+        self.points['valid'] = np.ones(points.shape[0], dtype=bool)
         for name in points.dtype.names:
             if name not in self.points:
                 self.points[name] = points[name]
@@ -255,7 +249,10 @@ class RXPFile:
             self.pulses['beam_direction_y'] = y_t
             self.pulses['beam_direction_z'] = z_t
             _, self.pulses['zenith'], self.pulses['azimuth'] = xyz2rza(x_t, y_t, z_t)
-        self.pulses['valid'] = pulses['scanline'] >= 0
+        else:
+            _, self.pulses['zenith'], self.pulses['azimuth'] = xyz2rza(pulses['beam_direction_x'],
+                pulses['beam_direction_y'], pulses['beam_direction_z'])
+        self.pulses['valid'] = np.ones(pulses.shape[0], dtype=bool)
 
         if self.transform is not None:
             x_t,y_t,z_t = apply_transformation(points['x'], points['y'], points['z'], 
@@ -263,7 +260,7 @@ class RXPFile:
             self.points['x'] = x_t + self.transform[3,0]
             self.points['y'] = y_t + self.transform[3,1]
             self.points['z'] = z_t + self.transform[3,2]
-        self.points['valid'] = np.repeat(pulses['scanline'], self.pulses['target_count']) >= 0
+        self.points['valid'] = np.ones(points.shape[0], dtype=bool)
 
         for name in pulses.dtype.names:
             if name not in self.pulses:
