@@ -274,11 +274,14 @@ class Jupp2009:
 
         return pai
 
-    def get_pavd(self, pai_z):
+    def get_pavd(self, pai_z, central=True):
         """
-        Get the PAVD using central differences
+        Get the PAVD from the vertical PAI profile
         """
-        pavd = np.gradient(pai_z, self.height_bin)
+        if not central:
+            pavd = np.diff(pai_z, n=1, append=0) / self.hres
+        else:
+            pavd = np.gradient(pai_z, self.hres)
         return pavd
 
     def exportPlantProfiles(self, outfile=None):
