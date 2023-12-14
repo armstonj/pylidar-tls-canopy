@@ -23,6 +23,7 @@ class LeafScanFile:
         self.filename = filename
         self.sensor_height = sensor_height
         self.transform = transform
+        
         pattern = re.compile(r'(\w{8})_(\d{4})_(hemi|hinge|ground)_(\d{8})-(\d{6})Z_(\d{4})_(\d{4})\.csv')
         fileinfo = pattern.fullmatch( os.path.basename(filename) )
         if fileinfo:
@@ -34,6 +35,7 @@ class LeafScanFile:
             self.azimuth_shots = int(fileinfo[7])
         else:
             print(f'{filename} is not a recognized LEAF scan file')
+        
         self.read_meta()
         self.read_data()
 
@@ -56,6 +58,9 @@ class LeafScanFile:
                     if 'Finished' in line:
                         lparts = line.strip().split()
                         self.duration = float(lparts[2])
+                    elif 'GPS' in line:
+                        lparts = line[4::].strip().split(',')
+                        self.gps = lparts
                     else:
                         lparts = line.strip().split(':')
                         key = lparts[0][1::].strip()
@@ -79,30 +84,45 @@ class LeafScanFile:
         """
         Read file
         """
+        if self.header['Firmware ver.'] >= 4:
+            scan_nsteps = 2.56e4
+            dtypes = {'sample_count':int, 'scan_encoder':float, 'rotary_encoder':float,
+                'range1':float, 'intensity1':int, 'range2':float, 'sample_time':float}
+        else:
+            scan_nsteps = 1e4
+            dtypes = {'sample_count':int, 'scan_encoder':float, 'rotary_encoder':float,
+                'range1':float, 'intensity1':int, 'range2':float, 'intensity2':int, 
+                'sample_time':float}
+
         self.data = pd.read_csv(self.filename, comment='#', na_values=-1.0,
-            names=['sample_count','scan_encoder','rotary_encoder','range1',
-                   'intensity1','range2','sample_time'], on_bad_lines='warn')
+            names=dtypes.keys(), on_bad_lines='warn')
 
         if self.data.empty:
             return
 
+       
         num_short_lines = self.data.shape[0] - self.data['sample_time'].count()
         if num_short_lines > 0:
             idx = self.data['sample_time'].notna()
             self.data = self.data.loc[idx]
-            dtypes = {'sample_count':int, 'scan_encoder':float, 'rotary_encoder':float,
-                'range1':float, 'intensity1':int, 'range2':float, 'sample_time':float}
             self.data = self.data.astype(dtypes)
             msg = f'Removed {num_short_lines:d} truncated records in {self.filename}'
             print(msg)
-           
+        
+        # Set invalid values to NaN
+        for n in (1,2):
+            mask = (self.data[f'range{n:d}'] > 120)
+            if f'intensity{n:d}' in self.data.columns:
+                mask |= (self.data[f'intensity{n:d}'] <= 0)
+            self.data.loc[mask,f'range{n:d}'] = np.nan
+
         self.data['target_count'] = (2 - self.data['range1'].isna().astype(int) +
             self.data['range2'].isna().astype(int))
 
         self.data['datetime'] = [self.datetime + timedelta(milliseconds=s)
             for s in self.data['sample_time'].cumsum()]
 
-        self.data['zenith'] = self.data['scan_encoder'] / 1e4 * 2 * np.pi
+        self.data['zenith'] = self.data['scan_encoder'] / scan_nsteps * 2 * np.pi
         self.data['azimuth'] = self.data['rotary_encoder'] / 2e4 * 2 * np.pi
 
         if self.transform:
