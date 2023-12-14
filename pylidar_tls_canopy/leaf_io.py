@@ -87,12 +87,12 @@ class LeafScanFile:
         if self.header['Firmware ver.'] >= 4:
             scan_nsteps = 2.56e4
             dtypes = {'sample_count':int, 'scan_encoder':float, 'rotary_encoder':float,
-                'range1':float, 'intensity1':int, 'range2':float, 'sample_time':float}
+                'range1':float, 'intensity1':int, 'range2':float, 'intensity2':int, 
+                'sample_time':float}
         else:
             scan_nsteps = 1e4
             dtypes = {'sample_count':int, 'scan_encoder':float, 'rotary_encoder':float,
-                'range1':float, 'intensity1':int, 'range2':float, 'intensity2':int, 
-                'sample_time':float}
+                'range1':float, 'intensity1':int, 'range2':float, 'sample_time':float}
 
         self.data = pd.read_csv(self.filename, comment='#', na_values=-1.0,
             names=dtypes.keys(), on_bad_lines='warn')
@@ -100,7 +100,7 @@ class LeafScanFile:
         if self.data.empty:
             return
 
-       
+        # Remove truncated records 
         num_short_lines = self.data.shape[0] - self.data['sample_time'].count()
         if num_short_lines > 0:
             idx = self.data['sample_time'].notna()
@@ -159,9 +159,9 @@ class LeafPowerFile:
             self.datetime = datetime.strptime(fileinfo[2], '%Y%m%d')
         else:
             print(f'{filename} is not a recognized LEAF power file')
+        self.read_data()
 
     def __enter__(self):
-        self.read_data()
         return self
 
     def __exit__(self, type, value, traceback):
