@@ -19,10 +19,11 @@ import pandas as pd
 
 
 class LeafScanFile:
-    def __init__(self, filename, sensor_height=None, transform=True):
+    def __init__(self, filename, sensor_height=None, transform=True, max_range=120):
         self.filename = filename
         self.sensor_height = sensor_height
         self.transform = transform
+        self.max_range = max_range
         
         pattern = re.compile(r'(\w{8})_(\d{4})_(hemi|hinge|ground)_(\d{8})-(\d{6})Z_(\d{4})_(\d{4})\.csv')
         fileinfo = pattern.fullmatch( os.path.basename(filename) )
@@ -84,7 +85,7 @@ class LeafScanFile:
         """
         Read file
         """
-        if self.header['Firmware ver.'] >= 4:
+        if self.header['Firmware ver.'] >= 4.11:
             scan_nsteps = 2.56e4
             dtypes = {'sample_count':int, 'scan_encoder':float, 'rotary_encoder':float,
                 'range1':float, 'intensity1':int, 'range2':float, 'intensity2':int, 
@@ -111,7 +112,7 @@ class LeafScanFile:
         
         # Set invalid values to NaN
         for n in (1,2):
-            mask = (self.data[f'range{n:d}'] > 120)
+            mask = (self.data[f'range{n:d}'] > self.max_range)
             if f'intensity{n:d}' in self.data.columns:
                 mask |= (self.data[f'intensity{n:d}'] <= 0)
             self.data.loc[mask,f'range{n:d}'] = np.nan
