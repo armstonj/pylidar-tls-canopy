@@ -56,7 +56,7 @@ class RDBFile:
         if not isinstance(self.query_str, list):
             self.query_str = [self.query_str]
 
-        r = re.compile(r'((?:\(|))\s*([a-z]+)\s*(<|>|==|>=|<=|!=)\s*([-+]?\d+(?:\.\d+)?)\s*((?:\)|))')
+        r = re.compile(r'((?:\(|))\s*([a-z_]+)\s*(<|>|==|>=|<=|!=)\s*([-+]?\d+(?:\.\d+)?)\s*((?:\)|))')
         valid = np.ones(points.shape[0], dtype=bool)
         for q in self.query_str:
             m = r.match(q)
@@ -188,7 +188,7 @@ class RXPFile:
         if not isinstance(self.query_str, list):
             self.query_str = [self.query_str]
 
-        r = re.compile(r'((?:\(|))\s*([a-z]+)\s*(<|>|==|>=|<=|!=)\s*([-+]?\d+(?:\.\d+)?)\s*((?:\)|))')
+        r = re.compile(r'((?:\(|))\s*([a-z_]+)\s*(<|>|==|>=|<=|!=)\s*([-+]?\d+(?:\.\d+)?)\s*((?:\)|))')
         valid = np.ones(points.shape[0], dtype=bool)
         for q in self.query_str:
             m = r.match(q)
