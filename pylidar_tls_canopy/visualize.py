@@ -256,10 +256,13 @@ class VizVoxelGrid:
 
 def plot_voxel_grid(data, title=['Range (m)'], clim=[[0,30]], figsize=(16,10), nbins=[10],
                     cmap=['bone'], extend=['max'], nodata=-9999, extent=None,
-                    xlabel=None, ylabel=None, facecolor='white', suptitle=None):
+                    xlabel=None, ylabel=None, facecolor='white', suptitle=None, 
+                    ncols=None, nrows=1):
     """Example function to plot a voxel grid"""
     ngrids = len(data)
-    fig, ax = plt.subplots(ncols=ngrids, nrows=1, squeeze=True, 
+    if ncols is None:
+        ncols = ngrids
+    fig, ax = plt.subplots(ncols=ncols, nrows=nrows, squeeze=True, 
                            sharex=True, sharey=True, figsize=figsize)
     fig.suptitle(suptitle, fontsize=16)
     with plt.style.context('seaborn-v0_8-notebook'):
