@@ -95,7 +95,7 @@ class VoxelModel:
 
     def run_occlusion_voxelgrid(self, null=-9999):
         """
-        Read all the data required to derice per voxel occlusion
+        Compute a weighted average of scan occlusion for each voxel
         """
         sh = (self.nz, self.ny, self.nx)
         voxelgrids = {}
@@ -103,7 +103,7 @@ class VoxelModel:
             voxelgrids[k] = np.zeros(sh, dtype=np.float32)
             for p in self.positions:
                 with rio.open(self.positions[p][k],'r') as src:
-                    voxelgrids[k] += np.clip(src.read(), 0, None)
+                    voxelgrids[k] += src.read()
         nbeam = voxelgrids['occl'] + voxelgrids['miss'] + voxelgrids['hits']
         poccl = np.full(sh, null, dtype=np.float32)
         np.divide(voxelgrids['occl'], nbeam, out=poccl, where=nbeam>0)
