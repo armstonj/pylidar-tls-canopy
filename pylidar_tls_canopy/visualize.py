@@ -206,12 +206,15 @@ class VizVoxelGrid:
 
     def create_viz(self, filenames, layer=1, names=['hits','miss','occl'], voxelsize=1,
         vmin_vals=[0,0,0], vmax_vals=[1000,10000,10000], titles=None, interval=50,
-        frames=57, bounds=[-25,-25,-15,25,25,45], nodata=-9999):
+        frames=57, bounds=[-25,-25,-15,25,25,45], nodata=-9999, cmap='gist_gray',
+        facecolor='lightyellow'):
 
         self.layer = layer
         self.bounds = bounds
         self.voxelsize = voxelsize
         self.nodata = nodata
+        self.cmap = cmap
+        self.facecolor = facecolor
 
         if titles is None:
             titles = names
@@ -232,7 +235,7 @@ class VizVoxelGrid:
         with plt.style.context('seaborn-v0_8-notebook'):    
             for i,ax in enumerate(self.axes):
                 tmp = np.ma.masked_equal(self.src[i].read(self.layer), self.nodata)
-                im = ax.imshow(tmp, cmap='gist_gray', animated=True, 
+                im = ax.imshow(tmp, cmap=self.cmap, animated=True, 
                                vmin=vmin_vals[i], vmax=vmax_vals[i])        
                 xt = ax.get_xticks().tolist()
                 yt = ax.get_yticks().tolist()
@@ -242,7 +245,7 @@ class VizVoxelGrid:
                 ax.yaxis.set_major_locator(mticker.FixedLocator(yt))
                 ax.set_yticklabels([f'{c[1]:.1f}' for c in t])
                 ax.set_title(titles[i])
-                ax.set_facecolor('lightyellow')
+                ax.set_facecolor(self.facecolor)
                 self.images.append(im)    
 
     def __updatefig(self, *args):
