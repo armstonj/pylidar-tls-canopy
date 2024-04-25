@@ -19,11 +19,13 @@ import pandas as pd
 
 
 class LeafScanFile:
-    def __init__(self, filename, sensor_height=None, transform=True, max_range=120):
+    def __init__(self, filename, sensor_height=None, transform=True, 
+        max_range=120, zenith_offset=0):
         self.filename = filename
         self.sensor_height = sensor_height
         self.transform = transform
         self.max_range = max_range
+        self.zenith_offset = zenith_offset
         
         pattern = re.compile(r'(\w{8})_(\d{4})_(hemi|hinge|ground)_(\d{8})-(\d{6})Z_(\d{4})_(\d{4})\.csv')
         fileinfo = pattern.fullmatch( os.path.basename(filename) )
@@ -123,7 +125,7 @@ class LeafScanFile:
         self.data['datetime'] = [self.datetime + timedelta(milliseconds=s)
             for s in self.data['sample_time'].cumsum()]
 
-        self.data['zenith'] = self.data['scan_encoder'] / scan_nsteps * 2 * np.pi
+        self.data['zenith'] = self.data['scan_encoder'] / scan_nsteps * 2 * np.pi + self.zenith_offset
         self.data['azimuth'] = self.data['rotary_encoder'] / 2e4 * 2 * np.pi
 
         if self.transform:
