@@ -239,11 +239,12 @@ class VizVoxelGrid:
                                vmin=vmin_vals[i], vmax=vmax_vals[i])        
                 xt = ax.get_xticks().tolist()
                 yt = ax.get_yticks().tolist()
-                t = [self.src[i].transform * c for c in zip(xt,yt)]
+                xt_t = [self.src[i].transform * (c,0) for c in xt]
+                yt_t = [self.src[i].transform * (0,c) for c in yt]
                 ax.xaxis.set_major_locator(mticker.FixedLocator(xt))
-                ax.set_xticklabels([f'{c[0]:.1f}' for c in t])
+                ax.set_xticklabels([f'{c[0]:.1f}' for c in xt_t])
                 ax.yaxis.set_major_locator(mticker.FixedLocator(yt))
-                ax.set_yticklabels([f'{c[1]:.1f}' for c in t])
+                ax.set_yticklabels([f'{c[1]:.1f}' for c in yt_t])
                 ax.set_title(titles[i])
                 ax.set_facecolor(self.facecolor)
                 self.images.append(im)    
@@ -299,7 +300,7 @@ def plot_voxel_profiles(x, y, figsize=[12,5], ncols=3, nrows=1, config=None):
         else:
             d = config[i]
             a.plot(x[i], y[i], color=d['color'], linestyle=d['linestyle'], label=d['label'])
-            a.set(xlabel=d['xlabel'], ylabel=d['ylabel'], title=d['title'], xlim=d['xlim'])
+            a.set(xlabel=d['xlabel'], ylabel=d['ylabel'], title=d['title'], xlim=d['xlim'], ylim=d['ylim'])
             if d['legend']:
                 a.legend()
         a.grid(False)
