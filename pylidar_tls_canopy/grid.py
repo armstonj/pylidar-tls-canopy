@@ -187,14 +187,15 @@ def grid_riegl_cartesian(riegl_list, transform_list, res, attribute='z', method=
 
 
 def grid_leaf_spherical(leaf_fn, resolution, attribute='range',
-    method='MEAN', sensor_height=1.5, transform=True):
+    method='MEAN', sensor_height=1.5, transform=True, zenith_offset=0):
     """
     Wrapper function to grid the LEAF point data on a spherical grid
     """
     res = np.radians(resolution)
     ncols = int( (2 * np.pi) // res + 1 )
     nrows = int( np.pi // res + 1 )
-    with leaf_io.LeafScanFile(leaf_fn, sensor_height=sensor_height, transform=transform) as leaf:
+    with leaf_io.LeafScanFile(leaf_fn, sensor_height=sensor_height, 
+        transform=transform, zenith_offset=zenith_offset) as leaf:
         if leaf.data.empty:
             return None
         with LidarGrid(ncols, nrows, 0, np.pi, resolution=res, init_cntgrid=True) as grd:
