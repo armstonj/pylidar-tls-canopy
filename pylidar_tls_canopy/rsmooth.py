@@ -37,7 +37,7 @@ def bisquare(r, h):
     return W
 
 
-def rsmooth(y, p=None):
+def rsmooth(y, p=None, max_k=6):
     if y.ndim < 2:
         y = np.atleast_2d(y)
         one_dim = True
@@ -77,7 +77,7 @@ def rsmooth(y, p=None):
         GCVs = RSS / n / (1 - TrH / n) ** 2
         return GCVs
 
-    for k in range(1, 7):
+    for k in range(1, max_k+1):
         tol = np.inf
         while tol > 1e-5:
             DCTy = dct2(W * (y - zz) + zz)

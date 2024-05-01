@@ -60,13 +60,13 @@ class VoxelModel:
             self.bounds[3], self.bounds[4], self.bounds[4], self.resolution,
             dtm_data, dtm_xmin, dtm_ymax, dtm_res)
 
-    def read_voxelgrids(self, z=0):
+    def read_voxelgrids(self, z=0, names=['pgap','zeni','vwts']):
         """
-        Read all the data required to invert the Pgap model
+        Read all the data required (e.g., to invert the Pgap model)
         """
         sh = (self.npos, self.ny, self.nx)
         self.voxelgrids = {}
-        for k in ('pgap','zeni','vwts'):
+        for k in names:
             self.voxelgrids[k] = np.empty(sh, dtype=np.float32)
             for i,p in enumerate(self.positions):
                 with rio.open(self.positions[p][k],'r') as src:
@@ -82,7 +82,7 @@ class VoxelModel:
         paih = np.empty(sh, dtype=np.float32)
         nscans = np.empty(sh, dtype=np.uint8)
         for i in range(self.nz):
-            self.read_voxelgrids(z=i)
+            self.read_voxelgrids(z=i, names=['pgap','zeni','vwts'])
             if weights:
                 w = self.voxelgrids['vwts']
             else:
@@ -92,6 +92,22 @@ class VoxelModel:
                 self.voxelgrids['pgap'], w, null=self.nodata, min_n=min_n)
 
         return paiv,paih,nscans        
+
+    def run_occlusion_voxelgrid(self, null=-9999):
+        """
+        Compute a weighted average of scan occlusion for each voxel
+        """
+        sh = (self.nz, self.ny, self.nx)
+        voxelgrids = {}
+        for k in ('occl','miss','hits'):
+            voxelgrids[k] = np.zeros(sh, dtype=np.float32)
+            for p in self.positions:
+                with rio.open(self.positions[p][k],'r') as src:
+                    voxelgrids[k] += src.read()
+        nbeam = voxelgrids['occl'] + voxelgrids['miss'] + voxelgrids['hits']
+        poccl = np.full(sh, null, dtype=np.float32)
+        np.divide(voxelgrids['occl'], nbeam, out=poccl, where=nbeam>0)
+        return poccl,nbeam
 
     def get_cover_profile(self, paiv):
         """
@@ -435,6 +451,7 @@ def traverse_voxels(x0, y0, z0, gnd, x1, y1, z1, dx, dy, dz, nx, ny, nz, voxdimx
        
         startR = min(tMaxX, tMaxY, tMaxZ)
 
+        last_voxel_hit = False
         while (x < nx) and (x >= 0) and (y < ny) and (y >= 0) and (z < nz) and (z >= 0):
             
             vidx = int(x + nx * y + nx * ny * z)
@@ -460,15 +477,19 @@ def traverse_voxels(x0, y0, z0, gnd, x1, y1, z1, dx, dy, dz, nx, ny, nz, voxdimx
 
             missed = False
             for i in range(target_count):
-                if (vidx == vox_idx[i]) and (gnd[i] == 0):
-                    hits[vidx] += w
-                    phit[vidx] += plen
-                    woccl += w
-                    wmiss -= w
-                elif (gnd[i] == 1):
-                    woccl += w
-                    wmiss -= w
+                if (vidx == vox_idx[i]):
+                    if (gnd[i] == 0):
+                        hits[vidx] += w
+                        phit[vidx] += plen
+                        wmiss -= w
+                    else:
+                        woccl += w
+                        wmiss -= w
+                    last_voxel_hit = True
                 else:
+                    if last_voxel_hit:
+                        woccl += w
+                        last_voxel_hit = False
                     missed = True
 
             occl[vidx] += woccl

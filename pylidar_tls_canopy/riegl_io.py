@@ -216,27 +216,32 @@ class RXPFile:
         self.points = {}
         self.pulses = {}
         if self.query_str is not None:
+    
             valid = self.run_query(points)
             points = points[valid]
            
             target_count = np.repeat(pulses['target_count'], pulses['target_count'])
             scanline = np.repeat(pulses['scanline'], pulses['target_count'])
             scanline_idx = np.repeat(pulses['scanline_idx'], pulses['target_count']) 
+           
             self.points['target_index'],new_target_count = reindex_targets(points['target_index'], 
                 target_count[valid], scanline[valid], scanline_idx[valid])
 
-            pulse_id = pulses['scanline'] * np.max(pulses['scanline_idx']) + pulses['scanline_idx']
-            point_id = scanline[valid] * np.max(pulses['scanline_idx']) + scanline_idx[valid]
-
+            max_scanline_idx = np.max(pulses['scanline_idx'])
+            pulse_id = pulses['scanline'] * max_scanline_idx + pulses['scanline_idx']
+            point_id = scanline[valid] * max_scanline_idx + scanline_idx[valid]
+            
             pulse_sort_idx = np.argsort(pulse_id)
             point_sort_idx = np.argsort(point_id)
             first = (self.points['target_index'][point_sort_idx] == 1)
             idx = np.searchsorted(pulse_id, point_id[point_sort_idx][first], sorter=pulse_sort_idx)
-
             self.pulses['target_count'] = np.zeros(pulses.shape[0], dtype=np.uint8)         
             self.pulses['target_count'][idx] = new_target_count[point_sort_idx][first]
+             
+            self.points['valid'] = np.ones(np.count_nonzero(valid), dtype=bool)
         else:
             self.pulses['target_count'] = pulses['target_count']
+            self.points['valid'] = np.ones(points.shape[0], dtype=bool)
 
         if self.transform is None:
             if 'PITCH' in self.meta:
@@ -260,7 +265,6 @@ class RXPFile:
             self.points['x'] = x_t + self.transform[3,0]
             self.points['y'] = y_t + self.transform[3,1]
             self.points['z'] = z_t + self.transform[3,2]
-        self.points['valid'] = np.ones(points.shape[0], dtype=bool)
 
         for name in pulses.dtype.names:
             if name not in self.pulses:

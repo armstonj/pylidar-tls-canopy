@@ -147,7 +147,7 @@ class Jupp2009:
                 points['azimuth'][idx], method=method)
 
     def add_leaf_scan_position(self, leaf_file, method='FIRSTLAST', min_zenith=5, 
-        max_zenith=70, sensor_height=None):
+        max_zenith=70, sensor_height=None, zenith_offset=0):
         """
         Add a leaf scan position to the profile
         """
@@ -155,7 +155,8 @@ class Jupp2009:
         max_zenith_r = np.radians(max_zenith)
         cols = ['zenith','azimuth','target_count','h1','h2']
 
-        with leaf_io.LeafScanFile(leaf_file, sensor_height=sensor_height) as leaf:
+        with leaf_io.LeafScanFile(leaf_file, sensor_height=sensor_height, 
+            zenith_offset=zenith_offset) as leaf:
             self.datetime = leaf.datetime
             data = {}
             if not leaf.data.empty:
