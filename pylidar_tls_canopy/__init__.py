@@ -5,7 +5,7 @@ Main module
 # This file is part of pylidar_tls_canopy
 # Copyright (C) 2022
 
-PYLIDAR_TLS_CANOPY_VERSION = '0.3'
+PYLIDAR_TLS_CANOPY_VERSION = '0.4'
 __version__ = PYLIDAR_TLS_CANOPY_VERSION
 
 PRR_MAX_TARGETS = {"100 kHz": 18, "300 kHz": 15, "600 kHz": 8, "1200 kHz": 4}
