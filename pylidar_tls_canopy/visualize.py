@@ -46,7 +46,7 @@ def plot_riegl_grid(data, label='Range (m)', clim=[0,30], figsize=(16,10), nbins
                 ax[i,0].get_yaxis().set_visible(False)
             tmp = np.ma.masked_equal(data[i], nodata)
             p = ax[i,0].imshow(tmp, interpolation='nearest', clim=clim, 
-                               cmap=matplotlib.cm.get_cmap(cmap,nbins),  
+                               cmap=plt.get_cmap(cmap,nbins),  
                                vmin=clim[0], vmax=clim[1], extent=extent)
             divider = make_axes_locatable(ax[i,0])
             cax = divider.append_axes('right', size='2%', pad=0.05)
@@ -119,12 +119,12 @@ def plot_leaf_grid(data, inset=None, label='Range (m)', clim=[0,30], figsize=(16
                 ax[i,0].get_yaxis().set_visible(False)
             tmp = np.ma.masked_equal(data[i], nodata)
             p = ax[i,0].imshow(tmp, interpolation='none', clim=clim, 
-                               cmap=matplotlib.cm.get_cmap(cmap,nbins),  
+                               cmap=plt.get_cmap(cmap,nbins),  
                                vmin=clim[0], vmax=clim[1], extent=extent)
             if inset is not None:
                 tmp = np.ma.masked_equal(inset[i], nodata)
                 pi = ax[i,0].imshow(tmp, interpolation='none', clim=clim, 
-                                    cmap=matplotlib.cm.get_cmap(inset_cmap,nbins),  
+                                    cmap=plt.get_cmap(inset_cmap,nbins),  
                                     vmin=clim[0], vmax=clim[1], extent=extent)
             divider = make_axes_locatable(ax[i,0])
             cax = divider.append_axes('right', size='2%', pad=0.05)
@@ -156,7 +156,7 @@ def plot_timseries_2d(data, clim=[0,0.2], title=None, nbins='auto', cmap='gist_e
     if xticks is not None:
         xticks = [mdates.date2num(d) for d in xticks]
     if isinstance(nbins, int):
-        cmap = matplotlib.cm.get_cmap(cmap,nbins)
+        cmap = plt.get_cmap(cmap,nbins)
     with plt.style.context('seaborn-v0_8-talk'):
         ax.set_facecolor(facecolor)
         ax.set(adjustable='datalim', xlabel='Date', ylabel='Height (m)')
@@ -279,7 +279,7 @@ def plot_voxel_grid(data, title=['Range (m)'], clim=[[0,30]], figsize=(16,10), n
                 ax[i].get_yaxis().set_visible(False)
             tmp = np.ma.masked_equal(data[i], nodata)
             p = ax[i].imshow(tmp, interpolation='nearest', clim=clim[i], 
-                             cmap=matplotlib.cm.get_cmap(cmap[i],nbins[i]),  
+                             cmap=plt.get_cmap(cmap[i],nbins[i]),  
                              vmin=clim[i][0], vmax=clim[i][1], extent=extent)
             divider = make_axes_locatable(ax[i])
             cax = divider.append_axes('right', size='2%', pad=0.05)
