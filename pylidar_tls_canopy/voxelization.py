@@ -452,6 +452,7 @@ def traverse_voxels(x0, y0, z0, gnd, x1, y1, z1, dx, dy, dz, nx, ny, nz, voxdimx
         startR = min(tMaxX, tMaxY, tMaxZ)
 
         last_voxel_hit = False
+        last_canopy_hit_num = 0.0
         while (x < nx) and (x >= 0) and (y < ny) and (y >= 0) and (z < nz) and (z >= 0):
             
             vidx = int(x + nx * y + nx * ny * z)
@@ -475,27 +476,32 @@ def traverse_voxels(x0, y0, z0, gnd, x1, y1, z1, dx, dy, dz, nx, ny, nz, voxdimx
             endR = min(tMaxX, tMaxY, tMaxZ)
             plen = endR - startR
 
-            missed = False
+            vg_num = 0
+            gnd_num = 0
             for i in range(target_count):
                 if (vidx == vox_idx[i]):
                     if (gnd[i] == 0):
-                        hits[vidx] += w
-                        phit[vidx] += plen
-                        wmiss -= w
+                        vg_num += 1
                     else:
-                        woccl += w
-                        wmiss -= w
-                    last_voxel_hit = True
-                else:
-                    if last_voxel_hit:
-                        woccl += w
-                        last_voxel_hit = False
-                    missed = True
+                        gnd_num += 1
+
+            if last_voxel_hit:
+                woccl += w * last_canopy_hit_num
+                last_voxel_hit = False
+                last_canopy_hit_num = 0.0
+
+            if vg_num + gnd_num > 0:
+                hits[vidx] += w * vg_num
+                phit[vidx] += plen * vg_num
+                wmiss -= w * (vg_num + gnd_num)
+                woccl += w * gnd_num
+                last_voxel_hit = vg_num > 0
+                last_canopy_hit_num = vg_num
+            else:
+                pmiss[vidx] += plen
 
             occl[vidx] += woccl
             miss[vidx] += wmiss
-            if missed:
-                pmiss[vidx] += plen
 
             startR = endR
 
@@ -638,4 +644,3 @@ def write_voxelgrid(vmodel, data, filename):
             for i in range(vmodel.nz):
                 description = f'{elev[i]:.02f}m'
                 dst.set_band_description(i+1, description)
-
