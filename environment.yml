@@ -8,6 +8,7 @@ dependencies:
   - numba
   - pandas
   - scipy
+  - laspy
   - rasterio
   - tqdm
   - typed-ast

@@ -9,9 +9,13 @@ University of Maryland
 December 2022
 """
 
+import os
 import sys
 import json
 import numpy as np
+
+import multiprocessing as mp
+from tqdm.notebook import tqdm
 
 import numba as nb
 from numba import njit
@@ -22,6 +26,9 @@ from affine import Affine
 
 from . import riegl_io
 from . import RIO_DEFAULT_PROFILE
+
+from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
+import laspy
 
 
 class VoxelModel:
@@ -127,7 +134,7 @@ class VoxelModel:
         return cover_z
 
 
-class VoxelGrid:
+class TLSVoxelGrid:
     """
     Class for a voxel grid of a TLS scan
     """
@@ -217,7 +224,7 @@ class VoxelGrid:
         phit = np.zeros(self.nvox, dtype=float)
         pmiss = np.zeros(self.nvox, dtype=float)
 
-        run_traverse_voxels(self.x0, self.y0, self.z0, self.ground, self.points['x'].data, 
+        run_traverse_voxels_tls(self.x0, self.y0, self.z0, self.ground, self.points['x'].data, 
             self.points['y'].data, self.points['z'].data, self.dx, self.dy, self.dz, 
             self.count, self.voxdimx, self.voxdimy, self.voxdimz, self.nx, self.ny, 
             self.nz, self.bounds, self.voxelsize, hits, miss, occl, zeni, phit, pmiss)
@@ -288,6 +295,461 @@ class VoxelGrid:
                         description = f'{height:.02f}m'
                         dst.set_band_description(i+1, description)
 
+    
+class DLSVoxelGrid:
+    """
+    Voxel grid for a drone lidar (DLS) flightline.
+ 
+    Parameters
+    ----------
+    profile : dict
+        Rasterio write profile.
+ 
+    Usage
+    -----
+        grid = DLSVoxelGrid()
+        grid.add_laz_flightline('flight.laz')
+        grid.voxelize_scan(bounds, voxelsize=1.0)
+        grid.write_grids('output/flight')
+    """
+ 
+    def __init__(self, profile=None):
+        self.profile = dict(RIO_DEFAULT_PROFILE if profile is None else profile)
+        self.nodata  = self.profile['nodata']
+ 
+    # ── Data loading ──────────────────────────────────────────────────────────
+ 
+    def add_laz_flightline(self, laz_file, voxel_bounds=None, t_scale=2.0):
+        """
+        Load a LAZ flightline and derive all voxel traversal inputs.
+ 
+        Parameters
+        ----------
+        laz_file : str
+        voxel_bounds : (xmin, ymin, zmin, xmax, ymax, zmax) or None
+            Derived from file header if not provided.
+        t_scale : float
+            Passed to FlightlineProcessor; controls beam origin offset.
+        """
+        if voxel_bounds is None:
+            voxel_bounds = voxel_bounds_from_file(laz_file)
+ 
+        self.proc = FlightlineProcessor(laz_file, voxel_bounds, t_scale=t_scale)
+        self.proc.process()
+ 
+        # Pulse-level arrays (equivalent to TLS per-pulse fields)
+        pi = self.proc.pulse_inputs
+        self.x0    = pi['x0']   # array — varies with drone position
+        self.y0    = pi['y0']
+        self.z0    = pi['z0']
+        self.dx    = pi['dx']
+        self.dy    = pi['dy']
+        self.dz    = pi['dz']
+        self.count = pi['count']
+ 
+        # Return-level coordinates shaped as (n_pulses, max_returns) for njit
+        pbp = self.proc.points_by_pulse
+        self.points = {'x': pbp['x'], 'y': pbp['y'], 'z': pbp['z']}
+        self.ground = pbp['gnd']
+ 
+    # ── Voxel grid ────────────────────────────────────────────────────────────
+ 
+    def _init_voxel_grid(self, bounds, voxelsize):
+        self.bounds    = nb.typed.List(bounds)
+        self.voxelsize = float(voxelsize)
+        self.nx = int((bounds[3] - bounds[0]) // voxelsize)
+        self.ny = int((bounds[4] - bounds[1]) // voxelsize)
+        self.nz = int((bounds[5] - bounds[2]) // voxelsize)
+        self.voxdimx = bounds[3] - bounds[0]
+        self.voxdimy = bounds[4] - bounds[1]
+        self.voxdimz = bounds[5] - bounds[2]
+        self.nvox = int(self.nx * self.ny * self.nz)
+        self.profile.update(
+            height=self.ny, width=self.nx, count=self.nz,
+            transform=Affine(voxelsize, 0.0, bounds[0], 0.0, -voxelsize, bounds[4]),
+            nodata=self.nodata,
+        )
+ 
+    def voxelize_scan(self, bounds, voxelsize, save_counts=True):
+        """
+        Voxelize the flightline data.
+ 
+        Parameters
+        ----------
+        bounds : (xmin, ymin, zmin, xmax, ymax, zmax)
+        voxelsize : float
+        save_counts : bool
+            If True, raw hit/miss/occl/phit/pmiss grids are retained.
+ 
+        Note: run_traverse_voxels_dls differs from the TLS version in that
+        x0, y0, z0 are per-pulse arrays rather than scalars.
+        """
+        self._init_voxel_grid(bounds, voxelsize)
+ 
+        hits  = np.zeros(self.nvox, dtype=float)
+        miss  = np.zeros(self.nvox, dtype=float)
+        occl  = np.zeros(self.nvox, dtype=float)
+        zeni  = np.zeros(self.nvox, dtype=float)
+        phit  = np.zeros(self.nvox, dtype=float)
+        pmiss = np.zeros(self.nvox, dtype=float)
+ 
+        run_traverse_voxels_dls(
+            self.x0, self.y0, self.z0,
+            self.ground,
+            self.points['x'], self.points['y'], self.points['z'],
+            self.dx, self.dy, self.dz,
+            self.count,
+            self.voxdimx, self.voxdimy, self.voxdimz,
+            self.nx, self.ny, self.nz,
+            self.bounds, self.voxelsize,
+            hits, miss, occl, zeni, phit, pmiss,
+        )
+ 
+        self.voxelgrids = {}
+        nshots = hits + miss
+        nbeams = nshots + occl
+ 
+        self.voxelgrids['vwts'] = np.full(self.nvox, self.nodata, dtype=float)
+        np.add(phit, pmiss, out=self.voxelgrids['vwts'], where=nshots > 0)
+ 
+        self.voxelgrids['pgap'] = np.full(self.nvox, self.nodata, dtype=float)
+        np.divide(miss, nshots, out=self.voxelgrids['pgap'], where=nshots > 0)
+ 
+        self.voxelgrids['zeni'] = np.full(self.nvox, self.nodata, dtype=float)
+        np.divide(zeni, nbeams, out=self.voxelgrids['zeni'], where=nbeams > 0)
+ 
+        self.voxelgrids['vcls'] = self.classify_voxels(hits, miss, occl)
+ 
+        if save_counts:
+            self.voxelgrids['hits']  = hits
+            self.voxelgrids['miss']  = miss
+            self.voxelgrids['occl']  = occl
+            self.voxelgrids['phit']  = phit
+            self.voxelgrids['pmiss'] = pmiss
+ 
+    def classify_voxels(self, hits, miss, occl):
+        """
+        Classification of voxels.
+ 
+        Class       Value   Hits    Misses   Occluded
+        Observed    5       >0      >=0      >=0
+        Empty       4       =0      >0       >=0
+        Hidden      3       =0      =0       >0
+        Unobserved  2       =0      =0       =0
+        Ground      1
+        """
+        classification = np.full_like(hits, self.nodata)
+        classification[(hits > 0)]                               = 5
+        classification[(hits == 0) & (miss > 0)]                = 4
+        classification[(hits == 0) & (miss == 0) & (occl > 0)]  = 3
+        classification[(hits == 0) & (miss == 0) & (occl == 0)] = 2
+        return classification
+ 
+    def write_grids(self, prefix):
+        """Write voxel grids to GeoTIFF files."""
+        self.filenames = {}
+        new_shape = (self.nz, self.ny, self.nx)
+        for k, grid in self.voxelgrids.items():
+            self.filenames[k] = f'{prefix}_{k}.tif'
+            with rio.Env():
+                with rio.open(self.filenames[k], 'w', **self.profile) as dst:
+                    dst.write(grid.reshape(new_shape))
+                    dst.build_overviews([2, 4, 8], Resampling.average)
+                    for i in range(self.nz):
+                        height = self.bounds[2] + i * self.voxelsize
+                        dst.set_band_description(i + 1, f'{height:.2f}m')
+
+
+class FlightlineProcessor:
+    """
+    Derives voxel traversal inputs from a single drone lidar LAZ flightline.
+ 
+    Parameters
+    ----------
+    path : str
+    voxel_bounds : (xmin, ymin, zmin, xmax, ymax, zmax)
+    t_scale : float
+        Beam origin is placed t_scale * grid_diagonal behind each return.
+ 
+    Usage
+    -----
+        proc = FlightlineProcessor(path, voxel_bounds)
+        proc.process()
+        proc.voxelize(my_njit_fn)
+    """
+ 
+    FIELDS = ['X', 'Y', 'Z', 'gps_time', 'return_number',
+              'number_of_returns', 'classification', 'edge_of_flight_line']
+ 
+    def __init__(self, path, voxel_bounds, t_scale=2.0):
+        self.path         = path
+        self.voxel_bounds = voxel_bounds
+        self.t_scale      = t_scale
+        self.inputs       = None   # populated by process()
+ 
+    # ── Public interface ──────────────────────────────────────────────────────
+ 
+    def process(self):
+        """Run the full pipeline. Results stored in self.inputs."""
+        self._read_points()
+        self._sort_points()
+        self._build_pulse_table()
+        self._assign_segments()
+        self._compute_directions()
+        self._interpolate_directions()
+        self._compute_beam_origins()
+        self._expand_to_returns()
+        print(f"  {self.n_pulses:,} pulses  |  {len(self.x1):,} returns  |  "
+              f"{self._multi.sum():,} multi-return  |  {(~self._multi).sum():,} single-return")
+        return self
+ 
+    def voxelize(self, njit_fn, *args, **kwargs):
+        """
+        Call a numba njit voxelization function with the derived inputs.
+ 
+        The njit function is expected to accept:
+            x0, y0, z0, x1, y1, z1, dx, dy, dz, gnd, point_count
+        followed by any additional positional or keyword arguments.
+ 
+        Parameters
+        ----------
+        njit_fn : callable
+            Compiled numba function.
+        *args, **kwargs
+            Passed through to njit_fn after the standard inputs.
+ 
+        Returns
+        -------
+        Whatever njit_fn returns.
+        """
+        if self.inputs is None:
+            raise RuntimeError("Call process() before voxelize().")
+        inp = self.inputs
+        return njit_fn(
+            inp['x0'], inp['y0'], inp['z0'],
+            inp['x1'], inp['y1'], inp['z1'],
+            inp['dx'], inp['dy'], inp['dz'],
+            inp['gnd'], inp['point_count'],
+            *args, **kwargs,
+        )
+ 
+    @property
+    def pulse_inputs(self):
+        """
+        Pulse-level arrays, available after process().
+        Used by DLSVoxelGrid to match the TLS per-pulse interface.
+        """
+        if self.inputs is None:
+            raise RuntimeError("Call process() first.")
+        return dict(
+            x0=self._p_x0, y0=self._p_y0, z0=self._p_z0,
+            dx=self._p_ux, dy=self._p_uy, dz=self._p_uz,
+            count=self._actual_counts,  # actual observed, not declared number_of_returns
+            x=self._p_x_first, y=self._p_y_first, z=self._p_z_first,
+        )
+ 
+    @property
+    def points_by_pulse(self):
+        """
+        Return-level arrays reshaped to (n_pulses, max_returns) as expected
+        by run_traverse_voxels_dls.  Ragged pulses are padded with 0 / False.
+ 
+        Returns
+        -------
+        dict with keys: x, y, z (float64) and gnd (bool)
+        """
+        if self.inputs is None:
+            raise RuntimeError("Call process() first.")
+        max_ret = int(self._actual_counts.max())
+        n = self.n_pulses
+ 
+        x   = np.zeros((n, max_ret), dtype=np.float64)
+        y   = np.zeros((n, max_ret), dtype=np.float64)
+        z   = np.zeros((n, max_ret), dtype=np.float64)
+        gnd = np.zeros((n, max_ret), dtype=bool)
+ 
+        for i in range(n):
+            s = self._first_idx[i]
+            e = self._last_idx[i] + 1
+            k = e - s
+            x[i, :k]   = self.x1[s:e]
+            y[i, :k]   = self.y1[s:e]
+            z[i, :k]   = self.z1[s:e]
+            gnd[i, :k] = self.inputs['gnd'][s:e].astype(bool)
+ 
+        return dict(x=x, y=y, z=z, gnd=gnd)
+ 
+    # ── Pipeline steps ────────────────────────────────────────────────────────
+ 
+    def _read_points(self):
+        buf = {f: [] for f in self.FIELDS}
+        with laspy.open(self.path) as f:
+            self._scale  = f.header.scale
+            self._offset = f.header.offset
+            for chunk in f.chunk_iterator(1_000_000):
+                for field in self.FIELDS:
+                    buf[field].append(np.asarray(chunk[field]))
+        self._d = {f: np.concatenate(buf[f]) for f in self.FIELDS}
+ 
+    def _sort_points(self):
+        d = self._d
+        x1 = d['X'] * self._scale[0] + self._offset[0]
+        y1 = d['Y'] * self._scale[1] + self._offset[1]
+        z1 = d['Z'] * self._scale[2] + self._offset[2]
+        del d['X'], d['Y'], d['Z']
+ 
+        order = np.lexsort((d['return_number'], d['gps_time']))
+        self.x1 = x1[order]
+        self.y1 = y1[order]
+        self.z1 = z1[order]
+        self._d = {f: d[f][order] for f in d}
+        del order
+ 
+    def _build_pulse_table(self):
+        d = self._d
+        _, first_idx = np.unique(d['gps_time'], return_index=True)
+        last_idx          = np.empty_like(first_idx)
+        last_idx[:-1]     = first_idx[1:] - 1
+        last_idx[-1]      = len(self.x1) - 1
+ 
+        actual_counts = last_idx - first_idx + 1
+        if actual_counts.sum() != len(self.x1):
+            raise ValueError(
+                f"Return count mismatch: {actual_counts.sum():,} != {len(self.x1):,}")
+ 
+        self.n_pulses      = len(first_idx)
+        self._first_idx    = first_idx
+        self._last_idx     = last_idx
+        self._actual_counts = actual_counts
+        self._p_time       = d['gps_time'][first_idx]
+        self._p_nret       = d['number_of_returns'][first_idx]
+        self._p_edge       = np.maximum.reduceat(d['edge_of_flight_line'], first_idx)
+        self._p_x_first    = self.x1[first_idx]
+        self._p_y_first    = self.y1[first_idx]
+        self._p_z_first    = self.z1[first_idx]
+        self._p_x_last     = self.x1[last_idx]
+        self._p_y_last     = self.y1[last_idx]
+        self._p_z_last     = self.z1[last_idx]
+ 
+    def _assign_segments(self):
+        p_segment       = np.cumsum(self._p_edge)
+        seg_starts      = np.concatenate([[0], np.where(np.diff(p_segment))[0] + 1])
+        seg_ends        = np.concatenate([seg_starts[1:], [self.n_pulses]])
+        self._p_segment = p_segment
+        self._seg_starts = seg_starts
+        self._seg_ends   = seg_ends
+ 
+    def _compute_directions(self):
+        """Direction vectors for multi-return pulses."""
+        n = self.n_pulses
+        self._p_ux = np.full(n, np.nan)
+        self._p_uy = np.full(n, np.nan)
+        self._p_uz = np.full(n, np.nan)
+ 
+        multi = self._p_nret > 1
+        self._multi = multi
+ 
+        vx = self._p_x_last[multi] - self._p_x_first[multi]
+        vy = self._p_y_last[multi] - self._p_y_first[multi]
+        vz = self._p_z_last[multi] - self._p_z_first[multi]
+        self._p_ux[multi], self._p_uy[multi], self._p_uz[multi] = _normalize(vx, vy, vz)
+ 
+    def _interpolate_directions(self):
+        """
+        Temporal interpolation within flightline segments for single-return
+        pulses. Falls back to 2D spatial interpolation for segments that
+        contain no multi-return pulses at all.
+        """
+        multi  = self._multi
+        single = ~multi
+        n_spatial_fallback = 0
+ 
+        for s, e in zip(self._seg_starts, self._seg_ends):
+            seg_multi  = np.where(multi[s:e])[0] + s
+            seg_single = np.where(single[s:e])[0] + s
+            if len(seg_single) == 0:
+                continue
+            if len(seg_multi) == 0:
+                n_spatial_fallback += len(seg_single)
+                continue
+ 
+            anchor_t = self._p_time[seg_multi]
+            query_t  = self._p_time[seg_single]
+            for arr in [self._p_ux, self._p_uy, self._p_uz]:
+                arr[seg_single] = np.interp(query_t, anchor_t, arr[seg_multi])
+ 
+            dx, dy, dz = _normalize(
+                self._p_ux[seg_single],
+                self._p_uy[seg_single],
+                self._p_uz[seg_single],
+            )
+            self._p_ux[seg_single] = dx
+            self._p_uy[seg_single] = dy
+            self._p_uz[seg_single] = dz
+ 
+        self._spatial_fallback(n_spatial_fallback)
+ 
+    def _spatial_fallback(self, n_flagged):
+        """2D spatial interpolation for segments with no multi-return pulses."""
+        still_nan = np.isnan(self._p_ux)
+        if not still_nan.any():
+            return
+ 
+        print(f"  Spatial post-processing {still_nan.sum():,} pulses "
+              f"({n_flagged:,} flagged during segment pass)")
+ 
+        anchor_mask = self._multi & ~np.isnan(self._p_ux)
+        anchor_xy   = np.column_stack([
+            (self._p_x_first[anchor_mask] + self._p_x_last[anchor_mask]) / 2,
+            (self._p_y_first[anchor_mask] + self._p_y_last[anchor_mask]) / 2,
+        ])
+        query_xy = np.column_stack([
+            self._p_x_first[still_nan], self._p_y_first[still_nan]
+        ])
+ 
+        for arr in [self._p_ux, self._p_uy, self._p_uz]:
+            lin  = LinearNDInterpolator(anchor_xy, arr[anchor_mask], fill_value=np.nan)
+            vals = lin(query_xy)
+            outside = np.isnan(vals)
+            if outside.any():
+                nn = NearestNDInterpolator(anchor_xy, arr[anchor_mask])
+                vals[outside] = nn(query_xy[outside])
+            arr[still_nan] = vals
+ 
+        dx, dy, dz = _normalize(
+            self._p_ux[still_nan], self._p_uy[still_nan], self._p_uz[still_nan]
+        )
+        self._p_ux[still_nan] = dx
+        self._p_uy[still_nan] = dy
+        self._p_uz[still_nan] = dz
+ 
+    def _compute_beam_origins(self):
+        xmin, ymin, zmin, xmax, ymax, zmax = self.voxel_bounds
+        diag = np.sqrt((xmax-xmin)**2 + (ymax-ymin)**2 + (zmax-zmin)**2)
+        t = diag * self.t_scale
+ 
+        # Beam origin: project back along unit direction to outside the grid
+        self._p_x0 = self._p_x_first - t * self._p_ux
+        self._p_y0 = self._p_y_first - t * self._p_uy
+        self._p_z0 = self._p_z_first - t * self._p_uz
+ 
+        # Displacement vectors from x0 to x_last so that t=1 reaches the
+        # last return — required by the voxel traversal parameterisation
+        self._p_dx = self._p_x_last - self._p_x0
+        self._p_dy = self._p_y_last - self._p_y0
+        self._p_dz = self._p_z_last - self._p_z0
+ 
+    def _expand_to_returns(self):
+        """Expand all pulse-level arrays to per-return using actual counts."""
+        ri = np.repeat(np.arange(self.n_pulses), self._actual_counts)
+        self.inputs = dict(
+            x0=self._p_x0[ri], y0=self._p_y0[ri], z0=self._p_z0[ri],
+            x1=self.x1,        y1=self.y1,         z1=self.z1,
+            dx=self._p_ux[ri], dy=self._p_uy[ri],  dz=self._p_uz[ri],
+            gnd=(self._d['classification'] == 2).astype(np.uint8),
+            point_count=self._p_nret[ri],
+        )
+
 
 @njit
 def extract_ground_by_pulse(x, y, target_count, data, xmin, ymax, binsize, nodata=-9999):
@@ -321,7 +783,7 @@ def create_ground_voxel_grid(nx, ny, nz, xmin, ymax, zmin, binsize,
 
 
 @njit
-def run_traverse_voxels(x0, y0, z0, gnd, x, y, z, dx, dy, dz, target_count, voxdimx, voxdimy, voxdimz,
+def run_traverse_voxels_tls(x0, y0, z0, gnd, x, y, z, dx, dy, dz, target_count, voxdimx, voxdimy, voxdimz,
                         nx, ny, nz, bounds, voxelsize, hits, miss, occl, zeni, phit, pmiss):
     """
     Loop through each pulse and run voxel traversal
@@ -332,7 +794,21 @@ def run_traverse_voxels(x0, y0, z0, gnd, x, y, z, dx, dy, dz, target_count, voxd
         traverse_voxels(x0, y0, z0, gnd[i,:], x[i,:], y[i,:], z[i,:], dx[i], dy[i], dz[i],
             nx, ny, nz, voxdimx, voxdimy, voxdimz, bounds, voxelsize, target_count[i],
             hits, miss, occl, zeni, phit, pmiss, vox_idx)
-    
+
+
+@njit
+def run_traverse_voxels_dls(x0, y0, z0, gnd, x, y, z, dx, dy, dz, target_count, voxdimx, voxdimy, voxdimz,
+                        nx, ny, nz, bounds, voxelsize, hits, miss, occl, zeni, phit, pmiss):
+    """
+    Loop through each pulse and run voxel traversal
+    """
+    max_nreturns = np.max(target_count)
+    vox_idx = np.empty(max_nreturns, dtype=np.uint32)
+    for i in range(target_count.shape[0]):        
+        traverse_voxels(x0[i], y0[i], z0[i], gnd[i,:], x[i,:], y[i,:], z[i,:], dx[i], dy[i], dz[i],
+            nx, ny, nz, voxdimx, voxdimy, voxdimz, bounds, voxelsize, target_count[i],
+            hits, miss, occl, zeni, phit, pmiss, vox_idx)    
+
 
 @njit
 def traverse_voxels(x0, y0, z0, gnd, x1, y1, z1, dx, dy, dz, nx, ny, nz, voxdimx, voxdimy, voxdimz,
@@ -452,6 +928,7 @@ def traverse_voxels(x0, y0, z0, gnd, x1, y1, z1, dx, dy, dz, nx, ny, nz, voxdimx
         startR = min(tMaxX, tMaxY, tMaxZ)
 
         last_voxel_hit = False
+        last_canopy_hit_num = 0.0
         while (x < nx) and (x >= 0) and (y < ny) and (y >= 0) and (z < nz) and (z >= 0):
             
             vidx = int(x + nx * y + nx * ny * z)
@@ -475,27 +952,32 @@ def traverse_voxels(x0, y0, z0, gnd, x1, y1, z1, dx, dy, dz, nx, ny, nz, voxdimx
             endR = min(tMaxX, tMaxY, tMaxZ)
             plen = endR - startR
 
-            missed = False
+            vg_num = 0
+            gnd_num = 0
             for i in range(target_count):
                 if (vidx == vox_idx[i]):
                     if (gnd[i] == 0):
-                        hits[vidx] += w
-                        phit[vidx] += plen
-                        wmiss -= w
+                        vg_num += 1
                     else:
-                        woccl += w
-                        wmiss -= w
-                    last_voxel_hit = True
-                else:
-                    if last_voxel_hit:
-                        woccl += w
-                        last_voxel_hit = False
-                    missed = True
+                        gnd_num += 1
+
+            if last_voxel_hit:
+                woccl += w * last_canopy_hit_num
+                last_voxel_hit = False
+                last_canopy_hit_num = 0.0
+
+            if vg_num + gnd_num > 0:
+                hits[vidx] += w * vg_num
+                phit[vidx] += plen * vg_num
+                wmiss -= w * (vg_num + gnd_num)
+                woccl += w * gnd_num
+                last_voxel_hit = vg_num > 0
+                last_canopy_hit_num = vg_num
+            else:
+                pmiss[vidx] += plen
 
             occl[vidx] += woccl
             miss[vidx] += wmiss
-            if missed:
-                pmiss[vidx] += plen
 
             startR = endR
 
@@ -639,3 +1121,65 @@ def write_voxelgrid(vmodel, data, filename):
                 description = f'{elev[i]:.02f}m'
                 dst.set_band_description(i+1, description)
 
+
+def multivoxel_worker(inputs):
+    """
+    Run the voxelization for a single scan
+    """
+    config,rxp_fn,transform_fn,rdbx_fn,prefix = inputs
+    vgrid = voxelization.VoxelGrid(dtm_filename=config['dtm'])
+    vgrid.add_riegl_scan_position(rxp_fn, transform_fn, rdbx_file=rdbx_fn)
+    vgrid.voxelize_scan(config['bounds'], config['voxelsize'], save_counts=True)
+    vgrid.write_grids(prefix)
+    return vgrid.filenames
+
+
+def run_multivoxel_grids(rxp_fn, transform_fn, config,
+    rdbx_file=None, outdir=None, ncpu=1):
+    """
+    Multiprocessing of multiple scans on a voxel grid
+    """
+    npos = len(rxp_fn)
+    progress_bar = tqdm(total=npos)
+
+    def update_multivoxel_outputs(result):
+        """
+        Callback function for parallelized voxel processing
+        """
+        if result is not None:
+            name = result[0]
+            filenames = result[1]
+            config['positions'][name] = filenames
+        progress_bar.update()
+
+    pool = mp.Pool(ncpu)
+    for i in range(npos):
+        fn = os.path.basename(rxp_fn[i])
+        rdbx_fn = None if rdbx_file is None else rdbx_file[i]
+        name = os.path.splitext(fn)[0]
+        prefix = f'{outdir}/{name}'
+        pool.apply_async(multivoxel_worker, 
+                         (config,rxp_fn[i],transform_fn[i],rdbx_fn,prefix), 
+                         callback=update_multivoxel_outputs)
+    pool.close()
+    pool.join()
+
+
+def voxel_bounds_from_file(path):
+    """
+    Read bounding box from LAZ header (no point data loaded).
+ 
+    Returns
+    -------
+    (xmin, ymin, zmin, xmax, ymax, zmax)
+    """
+    with laspy.open(path) as f:
+        hdr = f.header
+    mins = np.asarray(hdr.min)
+    maxs = np.asarray(hdr.max)
+    return (mins[0], mins[1], mins[2], maxs[0], maxs[1], maxs[2])
+ 
+ 
+def _normalize(vx, vy, vz):
+    norm = np.sqrt(vx**2 + vy**2 + vz**2)
+    return vx / norm, vy / norm, vz / norm
