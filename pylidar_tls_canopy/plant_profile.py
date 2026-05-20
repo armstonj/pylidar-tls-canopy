@@ -45,9 +45,9 @@ class Jupp2009:
         self.zenith_bin = np.arange(self.min_z, self.max_z, self.zres) + self.zres / 2
         self.azimuth_bin = np.arange(0, 360, self.ares) + self.ares / 2 
 
-        nhbins = int( (max_h - min_h) // hres )
-        nzbins = int( (max_z - min_z) // zres )
-        nabins = int(360 // ares)        
+        nhbins = len(self.height_bin)
+        nzbins = len(self.zenith_bin)
+        nabins = len(self.azimuth_bin)
 
         self.target_output = np.zeros((nzbins, nabins, nhbins), dtype=np.float32)
         self.shot_output = np.zeros((nzbins,nabins,1), dtype=np.float32)
