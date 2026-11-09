@@ -146,6 +146,103 @@ class Jupp2009:
                 points['target_count'][idx], points['zenith'][idx],
                 points['azimuth'][idx], method=method)
 
+    def add_riegl_scan_position_scanline(self, rxp_file, transform_file, rdbx_file=None, sensor_height=None,
+        method="WEIGHTED", min_zenith=5, max_zenith=70, max_hr=None, query_str=None):
+        """
+        Add a RIEGL scan position to the profile
+
+        Filter RDBX points on 'scanline' and 'scanline_idx' in zenith range of RXP pulses
+        """
+        min_zenith_r = np.radians(min_zenith)
+        max_zenith_r = np.radians(max_zenith)
+        pulse_cols = ['zenith','azimuth','target_count', 'scanline', 'scanline_idx']
+        point_cols = ['x','y','z','range','target_index',
+                      'zenith','azimuth','target_count', 'scanline', 'scanline_idx']
+
+        pulses = {}
+        with riegl_io.RXPFile(rxp_file, transform_file=transform_file, query_str=query_str) as rxp:
+            for col in pulse_cols:
+                pulses[col] = rxp.get_data(col, return_as_point_attribute=False)
+            idx = (pulses['zenith'] >= min_zenith_r) & (pulses['zenith'] < max_zenith_r)
+            if not np.any(idx):
+                print("No pulses in given zenith range, exiting.")
+                sys.exit()
+            for col in pulse_cols:
+                pulses[col] = pulses[col][idx]
+
+            points = {}
+            if rdbx_file:
+                with riegl_io.RDBFile(rdbx_file, transform_file=transform_file, query_str=query_str) as f:
+                    for col in point_cols:
+                        points[col] = f.get_data(col)
+            else:
+                for col in point_cols:
+                    points[col] = rxp.get_data(col, return_as_point_attribute=True)
+
+            if self.ground_plane is None:
+                if sensor_height is not None:
+                    zoffset = rxp.transform[3,2] - sensor_height
+                else:
+                    zoffset = rxp.transform[3,2]
+            else:
+                zoffset = self.ground_plane[0]
+       
+        if self.ground_plane is None:
+            height = points['z'] + zoffset
+        else: 
+            height = points['z'] - (self.ground_plane[1] * points['x'] +
+                self.ground_plane[2] * points['y'] + zoffset)
+        
+        # filter points on scanline and scanline_idx of pulses to ensure alignment
+        df_points = pd.DataFrame({'scanline': points["scanline"], 'scanline_idx': points["scanline_idx"]})
+        df_pulses = pd.DataFrame({'scanline': pulses["scanline"], 'scanline_idx': pulses["scanline_idx"], 'zenith': pulses["zenith"], 'azimuth': pulses["azimuth"]})
+        df_points['orig_index'] = np.arange(len(df_points))
+
+        # check if scanline in rdbx is in reverse (not sure if this is due to rotation of scanner or just bug)
+        min_scanline_rdbx = df_points["scanline"].min()
+        if min_scanline_rdbx < -1:
+            # if inverted, shift rdbx
+            df_points[["scanline"]] = df_points[["scanline"]] + abs(df_points[["scanline"]].min())
+            max_scanline = df_points[["scanline"]].to_numpy().max()
+            # then invert rxp scanline + shift
+            df_pulses[["scanline"]] = df_pulses[["scanline"]]*(-1)
+            df_pulses[["scanline"]] = df_pulses[["scanline"]] + max_scanline
+
+        # inner join keeps only matches
+        matched = df_points.merge(df_pulses, on=['scanline', 'scanline_idx'], how='inner')
+        idx = np.zeros(len(df_points), dtype=bool)
+        idx[matched['orig_index'].values] = True
+
+        if not np.any(idx):
+            print("No pulses in given zenith range, exiting.")
+            sys.exit()
+        for col in point_cols:
+            points[col] = points[col][idx]
+        height = height[idx]
+
+        # change zenith and azimuth of points to values of corresponding pulses
+        matched_sorted = matched.sort_values('orig_index')
+        zenith_pulses = matched_sorted['zenith'].to_numpy()
+        azimuth_pulses = matched_sorted['azimuth'].to_numpy()
+        points["zenith"] = zenith_pulses
+        points["azimuth"] = azimuth_pulses
+
+        if max_hr is not None:
+            hr = points['range'] * np.sin(points['zenith'])
+            idx &= hr < max_hr
+            if not np.any(idx):
+                print("No pulses in given range, exiting.")
+                sys.exit()
+            for col in point_cols:
+                points[col] = points[col][idx]
+            height = height[idx]
+
+        self.add_shots(pulses['target_count'], pulses['zenith'],
+                    pulses['azimuth'], method=method)
+        self.add_targets(height, points['target_index'], 
+            points['target_count'], points['zenith'],
+            points['azimuth'], method=method)
+
     def add_leaf_scan_position(self, leaf_file, method='FIRSTLAST', min_zenith=5, 
         max_zenith=70, sensor_height=None, zenith_offset=0):
         """
