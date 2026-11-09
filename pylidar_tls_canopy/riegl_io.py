@@ -147,16 +147,18 @@ class RDBFile:
         for name in colnames:
             dtype_list.append((str(name), dtype_str[name], self.max_target_count))
 
-        pulse_id_rxp = pulse_scanline * np.max(pulse_scanline_idx) + pulse_scanline_idx
-        pulse_id_rdb = self.get_data('scanline') * np.max(pulse_scanline_idx) + self.get_data('scanline_idx')
-        
+        nidx = np.int64(np.max(pulse_scanline_idx)) + 1
+        pulse_id_rxp = pulse_scanline * nidx + pulse_scanline_idx
+        pulse_id_rdb = self.get_data('scanline') * nidx + self.get_data('scanline_idx')
+
         pulse_sort_idx_rxp = np.argsort(pulse_id_rxp)
         pulse_sort_idx_rdb = np.argsort(pulse_id_rdb)
         idx = np.searchsorted(pulse_id_rxp, pulse_id_rdb[pulse_sort_idx_rdb], sorter=pulse_sort_idx_rxp)
+        target_index = self.get_data('target_index')[pulse_sort_idx_rdb]
 
         output = np.empty(pulse_scanline.shape[0], dtype=dtype_list)
         for name in colnames:
-            output[idx,target_index-1] = self.get_data(name)[pulse_sort_idx_rdb]
+            output[name][idx,target_index-1] = self.get_data(name)[pulse_sort_idx_rdb]
 
         return output
 
@@ -227,9 +229,9 @@ class RXPFile:
             self.points['target_index'],new_target_count = reindex_targets(points['target_index'], 
                 target_count[valid], scanline[valid], scanline_idx[valid])
 
-            max_scanline_idx = np.max(pulses['scanline_idx'])
-            pulse_id = pulses['scanline'] * max_scanline_idx + pulses['scanline_idx']
-            point_id = scanline[valid] * max_scanline_idx + scanline_idx[valid]
+            nidx = np.int64(np.max(pulses['scanline_idx'])) + 1
+            pulse_id = pulses['scanline'] * nidx + pulses['scanline_idx']
+            point_id = scanline[valid] * nidx + scanline_idx[valid]
             
             pulse_sort_idx = np.argsort(pulse_id)
             point_sort_idx = np.argsort(point_id)
