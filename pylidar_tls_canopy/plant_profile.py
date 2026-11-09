@@ -208,6 +208,7 @@ class Jupp2009:
         zenith_bin_r = np.radians(self.zenith_bin)
         kthetal = np.full(self.pgap_theta_z.shape, np.log(1e-5), dtype=float)
         np.log(self.pgap_theta_z, out=kthetal, where=self.pgap_theta_z>0)
+        kthetal[np.isnan(self.pgap_theta_z)] = np.nan
         xtheta = np.abs(2 * np.tan(zenith_bin_r) / np.pi)
         paiv = np.zeros(self.pgap_theta_z.shape[1], dtype=np.float32)
         paih = np.zeros(self.pgap_theta_z.shape[1], dtype=np.float32)

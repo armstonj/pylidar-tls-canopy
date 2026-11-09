@@ -41,7 +41,12 @@ ACC_PXT = 8
 ACC_PTHETA = 9
 ACC_PUX = 10
 ACC_PUY = 11
-NACC = 12
+ACC_PHIT = 12
+ACC_NENTER = 13
+ACC_HITS2 = 14
+ACC_PEFF = 15
+ACC_PHITEFF = 16
+NACC = 17
 
 MAX_XTHETA = 100.0
 
@@ -118,7 +123,8 @@ class VoxelModel:
                 null=self.nodata, min_n=min_n)
         return paiv, paih, nscans
 
-    def run_attenuation_model(self, min_n=2, min_xtheta_range=0.2, max_iter=500, tol=1e-8):
+    def run_attenuation_model(self, min_n=2, min_xtheta_range=0.2, max_iter=500, tol=1e-8,
+                              estimator='mle', effective=False, ci=None):
         """
         Per-voxel attenuation model lambda(theta) = a |cos(theta)| + b (2/pi) sin(theta)
         fitted by Poisson maximum likelihood to the hits and free path length
@@ -127,23 +133,46 @@ class VoxelModel:
         a is the attenuation of a vertical beam (m-1), a + b the plant area
         density and degrees(arctan2(b, a)) the mean leaf angle. a and b are
         estimated where >= min_n positions observe the voxel with a spread of
-        (2/pi) tan(theta) >= min_xtheta_range; lambda (total hits / total free
-        path) is estimated wherever the voxel is observed.
+        (2/pi) tan(theta) >= min_xtheta_range.
+
+        lambda is the attenuation pooled over all positions, estimated wherever
+        the voxel is observed (see pooled_attenuation for estimator, effective
+        and ci). Requires the path_hit, nenter and hits2 grids for
+        estimator='bias_corrected' or ci, and path_eff, path_hit_eff for effective.
 
         Returns
         -------
         dict of (nz, ny, nx) float32 grids: a, b, pad, mla, lambda, npos
+        (and lambda_lo, lambda_hi when ci is given)
         """
         sh = (self.nz, self.ny, self.nx)
-        out = {k: np.full(sh, self.nodata, dtype=np.float32) for k in ('a', 'b', 'pad', 'mla', 'lambda')}
+        keys = ['a', 'b', 'pad', 'mla', 'lambda'] + (['lambda_lo', 'lambda_hi'] if ci else [])
+        out = {k: np.full(sh, self.nodata, dtype=np.float32) for k in keys}
         out['npos'] = np.zeros(sh, dtype=np.uint8)
-        names = ('hits', 'path', 'path_cos', 'path_sin')
+        names = ['hits', 'path', 'path_cos', 'path_sin']
+        if estimator != 'mle' or ci:
+            names += ['path_hit', 'nenter', 'hits2']
+        if effective:
+            names += ['path_eff', 'path_hit_eff']
         for i in range(self.nz):
             self.read_voxelgrids(z=i, names=names)
-            g = [self.voxelgrids[k] for k in names]
-            res = fit_attenuation_numba(*g, self.nodata, min_n, min_xtheta_range, max_iter, tol)
-            for k, v in zip(('a', 'b', 'pad', 'mla', 'lambda', 'npos'), res):
-                out[k][i] = v
+            v = self.voxelgrids
+            res = fit_attenuation_numba(v['hits'], v['path'], v['path_cos'], v['path_sin'],
+                self.nodata, min_n, min_xtheta_range, max_iter, tol)
+            for k, r in zip(('a', 'b', 'pad', 'mla', 'lambda', 'npos'), res):
+                out[k][i] = r
+            if estimator != 'mle' or ci or effective:
+                total = lambda k: np.where(v[k] != self.nodata, v[k], 0).sum(axis=0, dtype=np.float64)
+                lam, lo, hi = pooled_attenuation(total('hits'),
+                    total('path_eff' if effective else 'path'),
+                    total('path_hit_eff' if effective else 'path_hit') if estimator != 'mle' else None,
+                    total('nenter') if estimator != 'mle' else None,
+                    total('hits2') if ci else None, estimator=estimator, ci=ci)
+                observed = out['npos'][i] > 0
+                out['lambda'][i] = np.where(observed, lam, self.nodata)
+                if ci:
+                    out['lambda_lo'][i] = np.where(observed, lo, self.nodata)
+                    out['lambda_hi'][i] = np.where(observed, hi, self.nodata)
         return out
 
     def run_hinge_model(self, zenith_range=(52.5, 62.5)):
@@ -226,9 +255,10 @@ class _VoxelGridBase:
     flightline. Points are stored per pulse in compressed form: return i of pulse
     p is element start[p] + i of x, y, z and gnd.
     """
-    def __init__(self, profile=None):
+    def __init__(self, profile=None, k1=0.0):
         self.profile = dict(RIO_DEFAULT_PROFILE if profile is None else profile)
         self.nodata = self.profile['nodata']
+        self.k1 = float(k1)
 
     def _init_voxel_grid(self, bounds, voxelsize):
         bounds = np.asarray(bounds, dtype=np.float64)
@@ -246,7 +276,7 @@ class _VoxelGridBase:
         traverse_pulses(self.x, self.y, self.z, self.gnd, self.start, self.count,
             self.ux, self.uy, self.uz, np.asarray(origin, dtype=np.float64),
             use_first_return, self.bounds[0:3].copy(), self.nx, self.ny, self.nz,
-            self.voxelsize, acc)
+            self.voxelsize, acc, self.k1)
         return acc
 
     def _make_grids(self, acc, save_counts):
@@ -268,6 +298,12 @@ class _VoxelGridBase:
         g['path'] = path
         g['path_cos'] = acc[ACC_PCOS]
         g['path_sin'] = acc[ACC_PSIN]
+        g['path_hit'] = acc[ACC_PHIT]
+        g['nenter'] = acc[ACC_NENTER]
+        g['hits2'] = acc[ACC_HITS2]
+        if self.k1 > 0:
+            g['path_eff'] = acc[ACC_PEFF]
+            g['path_hit_eff'] = acc[ACC_PHITEFF]
         if save_counts:
             g['miss'] = acc[ACC_MISS]
             g['occl'] = acc[ACC_OCCL]
@@ -315,8 +351,8 @@ class TLSVoxelGrid(_VoxelGridBase):
     """
     Voxel grid of a RIEGL TLS scan position.
     """
-    def __init__(self, dtm_filename=None, profile=None):
-        super().__init__(profile=profile)
+    def __init__(self, dtm_filename=None, profile=None, k1=0.0):
+        super().__init__(profile=profile, k1=k1)
         self.dtm_filename = dtm_filename
 
     def classify_ground(self, thres=0.25):
@@ -433,7 +469,7 @@ class DLSVoxelGrid(_VoxelGridBase):
         ux = np.where(use, ps.ux, np.float32(np.nan))
         traverse_pulses(ps.x, ps.y, ps.z, ps.gnd, ps.start, ps.count, ux, ps.uy, ps.uz,
             np.zeros(3), True, self.bounds[0:3].copy(), self.nx, self.ny, self.nz,
-            self.voxelsize, acc)
+            self.voxelsize, acc, self.k1)
         cross = rays_cross_grid(ps.x, ps.y, ps.z, ps.start, ps.count, ux, ps.uy, ps.uz,
             self.bounds)
         zen = np.degrees(np.arccos(np.minimum(np.abs(ps.uz[cross]), 1)))
@@ -496,8 +532,15 @@ def _axis_init(p, d, i, vs, tin):
 
 
 @njit(cache=True)
+def _effective_path(z, k1):
+    if k1 <= 0.0:
+        return z
+    return -np.log(1.0 - min(k1 * z, 0.999999)) / k1
+
+
+@njit(cache=True)
 def traverse_pulses(x, y, z, gnd, start, count, ux, uy, uz, origin, use_first_return,
-                    bmin, nx, ny, nz, vs, acc):
+                    bmin, nx, ny, nz, vs, acc, k1=0.0):
     """
     Accumulate per-voxel beam statistics along each pulse (Amanatides and Woo, 1987).
 
@@ -517,6 +560,13 @@ def traverse_pulses(x, y, z, gnd, start, count, ux, uy, uz, origin, use_first_re
       path_cos, path_sin, path_xtheta, path_theta, path_ux, path_uy
               free path weighted |cos(theta)|, (2/pi) sin(theta), (2/pi) tan(theta),
               theta, ux and uy, with theta = arccos(|uz|)
+      path_hit     free path of the canopy-intercepted beam weight
+      nenter       number of pulses entering the voxel with beam weight > 0
+      hits2        sum of squared canopy hit weights
+      path_eff, path_hit_eff
+                   path and path_hit with each free path z replaced by the
+                   effective free path -ln(1 - k1 z) / k1 (Pimont et al., 2018);
+                   equal to path and path_hit when k1 = 0
     """
     gx = nx * vs
     gy = ny * vs
@@ -596,6 +646,8 @@ def traverse_pulses(x, y, z, gnd, start, count, ux, uy, uz, origin, use_first_re
 
             acc[ACC_OCCL, vidx] += 1.0 - wm
             acc[ACC_NBEAM, vidx] += 1.0
+            if wm > 0:
+                acc[ACC_NENTER, vidx] += 1.0
             fp = 0.0
             tp = t
             while k < n:
@@ -605,16 +657,24 @@ def traverse_pulses(x, y, z, gnd, start, count, ux, uy, uz, origin, use_first_re
                 if tk > tp:
                     fp += wm * (tk - tp)
                     tp = tk
+                wk = min(w, wm)
                 wm -= w
                 if wm < 0:
                     wm = 0.0
+                zk = max(tk - t, 0.0)
+                ze = _effective_path(zk, k1)
+                acc[ACC_PEFF, vidx] += wk * ze
                 if gnd[s + k]:
                     acc[ACC_GND, vidx] += w
                 else:
                     acc[ACC_HITS, vidx] += w
+                    acc[ACC_PHIT, vidx] += wk * zk
+                    acc[ACC_HITS2, vidx] += w * w
+                    acc[ACC_PHITEFF, vidx] += wk * ze
                 k += 1
             if tn > tp:
                 fp += wm * (tn - tp)
+            acc[ACC_PEFF, vidx] += wm * _effective_path(tn - t, k1)
             acc[ACC_MISS, vidx] += wm
             acc[ACC_PATH, vidx] += fp
             acc[ACC_PCOS, vidx] += fp * cos_t
@@ -781,6 +841,51 @@ def fit_attenuation_numba(hits, path, path_cos, path_sin, null, min_n, min_xthet
             pad_out[y, x] = a + b
             mla_out[y, x] = np.degrees(np.arctan2(b, a)) if a + b > 0 else null
     return a_out, b_out, pad_out, mla_out, lam_out, n_out
+
+
+def pooled_attenuation(hits, path, path_hit=None, nenter=None, hits2=None, estimator='mle', ci=None):
+    """
+    Attenuation coefficient (m-1) from summed canopy hit weights and free paths.
+
+    estimator
+      'mle'             hits / path (free path length MLE, Pimont et al., 2018)
+      'bias_corrected'  (hits - (hits / nenter) * (path_hit / path)) / path, the
+                        low-sampling bias correction of Pimont et al. (2018) as
+                        formulated in Pimont, Soma and Dupuy (2019); >= 0
+    ci
+      two-sided level (e.g. 0.95) of an exact Poisson-rate (Garwood) interval on
+      hits per unit free path, using the effective hit count hits**2 / hits2
+      for fractional hit weights
+
+    Returns
+    -------
+    lam, lo, hi (lo and hi are None without ci)
+    """
+    from scipy.stats import chi2
+    hits = np.asarray(hits, dtype=np.float64)
+    path = np.asarray(path, dtype=np.float64)
+    ok = path > 0
+    lam = np.full(hits.shape, np.nan)
+    np.divide(hits, path, out=lam, where=ok)
+    if estimator == 'bias_corrected':
+        corr = np.zeros(hits.shape)
+        good = ok & (nenter > 0)
+        corr[good] = hits[good] / nenter[good] * path_hit[good] / path[good]
+        lam = np.where(ok, np.maximum(hits - corr, 0) / np.where(ok, path, 1), np.nan)
+    elif estimator != 'mle':
+        raise ValueError(f'Unknown estimator: {estimator}')
+    lo = hi = None
+    if ci:
+        a = 1 - ci
+        pos = hits > 0
+        neff = np.zeros(hits.shape)
+        np.divide(hits ** 2, hits2, out=neff, where=pos & (hits2 > 0))
+        scale = np.ones(hits.shape)
+        np.divide(hits, neff, out=scale, where=neff > 0)
+        den = np.where(ok, 2 * path, np.nan)
+        lo = np.where(neff > 0, scale * chi2.ppf(a / 2, 2 * np.maximum(neff, 1e-12)), 0.0) / den
+        hi = scale * chi2.ppf(1 - a / 2, 2 * (neff + 1)) / den
+    return lam, lo, hi
 
 
 def overview_levels(nx, ny, factors=(2, 4, 8)):
