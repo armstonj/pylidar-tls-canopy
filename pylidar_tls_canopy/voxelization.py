@@ -10,14 +10,13 @@ December 2022
 """
 
 import os
-import sys
 import json
 import numpy as np
+import laspy
 
 import multiprocessing as mp
-from tqdm.notebook import tqdm
+from tqdm.auto import tqdm
 
-import numba as nb
 from numba import njit
 
 import rasterio as rio
@@ -26,1160 +25,815 @@ from affine import Affine
 
 from . import riegl_io
 from . import RIO_DEFAULT_PROFILE
+from .flightline import FlightlineProcessor, sample_raster
 
-from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
-import laspy
+
+# Accumulator rows of the traversal kernel
+ACC_HITS = 0
+ACC_MISS = 1
+ACC_OCCL = 2
+ACC_GND = 3
+ACC_NBEAM = 4
+ACC_PATH = 5
+ACC_PCOS = 6
+ACC_PSIN = 7
+ACC_PXT = 8
+ACC_PTHETA = 9
+ACC_PUX = 10
+ACC_PUY = 11
+NACC = 12
+
+MAX_XTHETA = 100.0
 
 
 class VoxelModel:
     """
-    Class for a voxel Pgap model using multiple TLS scans
+    Voxel Pgap model from multiple scan positions or flightlines.
+
+    The configuration file holds bounds, resolution, nx, ny, nz, nodata, dtm and
+    positions, where positions maps a name to the grid filenames written by
+    TLSVoxelGrid or DLSVoxelGrid. Grids are read north-up (row 0 = ymax).
     """
     def __init__(self, config_file, dtm_filename=None):
         self.config_file = config_file
         self.load_config()
-        self.dtm_filename = dtm_filename
-        if self.dtm is not None:
+        if dtm_filename is not None:
+            self.dtm = dtm_filename
+        if getattr(self, 'dtm', None) is not None:
             self.load_dtm()
 
     def load_config(self):
-        """
-        Load the VoxelModel configuration file
-        nz,ny,nz,resolution,bounds,nodata,positions
-        """
+        """Load the VoxelModel configuration file."""
         with open(self.config_file, 'r') as f:
             config = json.load(f)
-            for k in config:
-                setattr(self, k, config[k])
+        for k in config:
+            setattr(self, k, config[k])
         self.npos = len(self.positions)
 
     def load_dtm(self):
-        """
-        Load the DTM voxel grid
-        """
+        """Voxel grid flagging voxels whose centre lies below the DTM (1)."""
         with rio.open(self.dtm, 'r') as src:
             dtm_data = src.read(1)
             dtm_xmin = src.bounds.left
             dtm_ymax = src.bounds.top
             dtm_res = src.res[0]
-
         self.dtm_voxelgrid = create_ground_voxel_grid(self.nx, self.ny, self.nz,
-            self.bounds[3], self.bounds[4], self.bounds[4], self.resolution,
+            self.bounds[0], self.bounds[4], self.bounds[2], self.resolution,
             dtm_data, dtm_xmin, dtm_ymax, dtm_res)
 
-    def read_voxelgrids(self, z=0, names=['pgap','zeni','vwts']):
-        """
-        Read all the data required (e.g., to invert the Pgap model)
-        """
+    def read_voxelgrids(self, z=0, names=('pgap', 'zeni', 'vwts')):
+        """Read layer z of the named grids for all positions."""
         sh = (self.npos, self.ny, self.nx)
         self.voxelgrids = {}
         for k in names:
             self.voxelgrids[k] = np.empty(sh, dtype=np.float32)
-            for i,p in enumerate(self.positions):
-                with rio.open(self.positions[p][k],'r') as src:
-                    self.voxelgrids[k][i] = src.read(z+1)
+            for i, p in enumerate(self.positions):
+                with rio.open(self.positions[p][k], 'r') as src:
+                    self.voxelgrids[k][i] = src.read(z + 1)
+
+    def _has_grid(self, name):
+        return all(name in self.positions[p] for p in self.positions)
 
     def run_linear_model(self, min_n=3, weights=True):
         """
-        Run the linear model from Jupp et al. (2009) to get the
-        vertical and horizontal projected area
+        Jupp et al. (2009) linear model per voxel:
+        -ln Pgap(theta) = paiv + (2/pi) tan(theta) paih
+
+        paiv is the vertically projected plant area (intercept, theta = 0) and
+        paih the horizontally projected plant area (slope).
         """
         sh = (self.nz, self.ny, self.nx)
         paiv = np.empty(sh, dtype=np.float32)
         paih = np.empty(sh, dtype=np.float32)
         nscans = np.empty(sh, dtype=np.uint8)
+        xname = 'xtheta' if self._has_grid('xtheta') else 'zeni'
         for i in range(self.nz):
-            self.read_voxelgrids(z=i, names=['pgap','zeni','vwts'])
-            if weights:
-                w = self.voxelgrids['vwts']
-            else:
-                w = np.ones(self.voxelgrids['vwts'].shape, dtype=np.float32)
+            self.read_voxelgrids(z=i, names=('pgap', xname, 'vwts'))
+            x = self.voxelgrids[xname]
+            if xname == 'zeni':
+                x = np.where(x != self.nodata, np.abs(2 * np.tan(x) / np.pi), self.nodata).astype(np.float32)
+            w = self.voxelgrids['vwts'] if weights else np.ones_like(self.voxelgrids['vwts'])
             nscans[i] = np.sum(self.voxelgrids['vwts'] > 0, axis=0, dtype=np.uint8)
-            paiv[i],paih[i] = run_linear_model_numba(self.voxelgrids['zeni'], 
-                self.voxelgrids['pgap'], w, null=self.nodata, min_n=min_n)
+            paiv[i], paih[i] = run_linear_model_numba(x, self.voxelgrids['pgap'], w,
+                null=self.nodata, min_n=min_n)
+        return paiv, paih, nscans
 
-        return paiv,paih,nscans        
-
-    def run_occlusion_voxelgrid(self, null=-9999):
+    def run_attenuation_model(self, min_n=2, min_xtheta_range=0.2, max_iter=500, tol=1e-8):
         """
-        Compute a weighted average of scan occlusion for each voxel
+        Per-voxel attenuation model lambda(theta) = a |cos(theta)| + b (2/pi) sin(theta)
+        fitted by Poisson maximum likelihood to the hits and free path length
+        sums of each position (a, b >= 0).
+
+        a is the attenuation of a vertical beam (m-1), a + b the plant area
+        density and degrees(arctan2(b, a)) the mean leaf angle. a and b are
+        estimated where >= min_n positions observe the voxel with a spread of
+        (2/pi) tan(theta) >= min_xtheta_range; lambda (total hits / total free
+        path) is estimated wherever the voxel is observed.
+
+        Returns
+        -------
+        dict of (nz, ny, nx) float32 grids: a, b, pad, mla, lambda, npos
         """
         sh = (self.nz, self.ny, self.nx)
+        out = {k: np.full(sh, self.nodata, dtype=np.float32) for k in ('a', 'b', 'pad', 'mla', 'lambda')}
+        out['npos'] = np.zeros(sh, dtype=np.uint8)
+        names = ('hits', 'path', 'path_cos', 'path_sin')
+        for i in range(self.nz):
+            self.read_voxelgrids(z=i, names=names)
+            g = [self.voxelgrids[k] for k in names]
+            res = fit_attenuation_numba(*g, self.nodata, min_n, min_xtheta_range, max_iter, tol)
+            for k, v in zip(('a', 'b', 'pad', 'mla', 'lambda', 'npos'), res):
+                out[k][i] = v
+        return out
+
+    def run_hinge_model(self, zenith_range=(52.5, 62.5)):
+        """
+        Plant area density from positions viewing each voxel within zenith_range
+        (degrees), where G(theta) ~ 0.5 for any leaf angle distribution:
+        pad = (sum hits / sum free path) / 0.5
+        """
+        sh = (self.nz, self.ny, self.nx)
+        pad = np.full(sh, self.nodata, dtype=np.float32)
+        lo, hi = np.radians(zenith_range[0]), np.radians(zenith_range[1])
+        for i in range(self.nz):
+            self.read_voxelgrids(z=i, names=('hits', 'path', 'zeni'))
+            h = self.voxelgrids['hits']
+            p = self.voxelgrids['path']
+            zen = self.voxelgrids['zeni']
+            sel = (p > 0) & (p != self.nodata) & (zen >= lo) & (zen <= hi)
+            hs = np.where(sel, h, 0).sum(axis=0)
+            ps = np.where(sel, p, 0).sum(axis=0)
+            np.divide(hs, 0.5 * ps, out=pad[i], where=ps > 0)
+        return pad
+
+    def run_occlusion_voxelgrid(self, null=-9999):
+        """Fraction of beams occluded before reaching each voxel, and the beam count."""
+        sh = (self.nz, self.ny, self.nx)
         voxelgrids = {}
-        for k in ('occl','miss','hits'):
+        for k in ('occl', 'miss', 'hits'):
             voxelgrids[k] = np.zeros(sh, dtype=np.float32)
             for p in self.positions:
-                with rio.open(self.positions[p][k],'r') as src:
+                with rio.open(self.positions[p][k], 'r') as src:
                     voxelgrids[k] += src.read()
         nbeam = voxelgrids['occl'] + voxelgrids['miss'] + voxelgrids['hits']
         poccl = np.full(sh, null, dtype=np.float32)
-        np.divide(voxelgrids['occl'], nbeam, out=poccl, where=nbeam>0)
-        return poccl,nbeam
+        np.divide(voxelgrids['occl'], nbeam, out=poccl, where=nbeam > 0)
+        return poccl, nbeam
 
-    def get_cover_profile(self, paiv):
+    def _fill(self, grid, fill):
+        valid = grid != self.nodata
+        out = np.where(valid, grid, 0).astype(np.float32)
+        if fill == 'layer_mean':
+            for i in range(grid.shape[0]):
+                if valid[i].any():
+                    out[i][~valid[i]] = grid[i][valid[i]].mean()
+        elif fill != 'zero':
+            raise ValueError(f'Unknown fill policy: {fill}')
+        return out, valid
+
+    def get_cover_profile(self, paiv, fill='zero'):
         """
-        Get the vertical canopy cover profile using conditional probability
+        Vertical canopy cover profile from the vertically projected PAI per voxel,
+        accumulated from the top layer down. Unobserved voxels take zero PAI
+        (fill='zero') or the layer mean of observed voxels (fill='layer_mean').
         """
-        pgap = np.zeros_like(paiv)
-        np.exp(-paiv, out=pgap, where=paiv != self.nodata)        
-
-        cover = np.zeros_like(pgap)
-        np.subtract(1, pgap, out=cover, where=paiv != self.nodata)
-
+        paiv_f, _ = self._fill(paiv, fill)
+        cover = 1 - np.exp(-paiv_f)
         cover_z = np.zeros_like(cover)
-        for i in range(cover.shape[0]-2,-1,-1):
-            p_o = cover_z[i+1]
-            cover_z[i] = p_o + (1 - p_o) * cover[i]
-        
+        cover_z[-1] = cover[-1]
+        for i in range(cover.shape[0] - 2, -1, -1):
+            cover_z[i] = cover_z[i + 1] + (1 - cover_z[i + 1]) * cover[i]
         return cover_z
 
+    def get_vertical_pgap(self, lambda0, fill='zero'):
+        """
+        Vertical gap probability below the top of the grid to the bottom of each
+        layer, exp(-sum lambda0 dz), from the vertical-beam attenuation (m-1).
 
-class TLSVoxelGrid:
+        Returns
+        -------
+        pgap_z : (nz, ny, nx) float32
+        observed : (nz, ny, nx) bool, voxels with an estimate
+        """
+        lam, observed = self._fill(lambda0, fill)
+        tau = np.cumsum((lam * self.resolution)[::-1], axis=0)[::-1]
+        return np.exp(-tau).astype(np.float32), observed
+
+
+class _VoxelGridBase:
     """
-    Class for a voxel grid of a TLS scan
+    Shared voxel grid definition, traversal and output for one scan position or
+    flightline. Points are stored per pulse in compressed form: return i of pulse
+    p is element start[p] + i of x, y, z and gnd.
     """
-    def __init__(self, dtm_filename=None, profile=RIO_DEFAULT_PROFILE):
-        self.dtm_filename = dtm_filename
-        self.nodata = profile['nodata']
-        self.profile = profile
-        if self.dtm_filename is not None:
-            self.load_dtm()
-
-    def load_dtm(self):
-        with rio.open(self.dtm_filename, 'r') as src:
-            self.dtm_data = src.read(1)
-            self.dtm_xmin = src.bounds.left
-            self.dtm_ymax = src.bounds.top
-            self.dtm_res = src.res[0]
-
-    def classify_ground(self, x, y, z, target_count, thres=0.25):
-        """
-        Classify points as ground (1) or canopy (0)
-        """
-        if self.dtm_filename is not None:
-            dtm_vals = extract_ground_by_pulse(x, y, target_count, self.dtm_data,
-                self.dtm_xmin, self.dtm_ymax, self.dtm_res, nodata=self.nodata)
-            self.ground = np.zeros(z.shape, dtype=bool)
-            np.less(z, dtm_vals + thres, out=self.ground, 
-                where=dtm_vals != self.nodata)
-        else:
-            self.ground = np.zeros(z.shape, dtype=bool)    
-
-    def add_riegl_scan_position(self, rxp_file, transform_file, rdbx_file=None, query_str=None):
-        """
-        Add a scan position using rxp
-        """
-        with riegl_io.RXPFile(rxp_file, transform_file=transform_file, query_str=query_str) as rxp:
-            self.count = rxp.get_data('target_count')
-
-            self.dx = rxp.get_data('beam_direction_x')
-            self.dy = rxp.get_data('beam_direction_y')
-            self.dz = rxp.get_data('beam_direction_z')
-
-            self.x0 = rxp.transform[3,0]
-            self.y0 = rxp.transform[3,1]
-            self.z0 = rxp.transform[3,2]
-
-            self.pulse_scanline = rxp.get_data('scanline')
-            self.pulse_scanline_idx = rxp.get_data('scanline_idx')
-
-            if rdbx_file:
-                with riegl_io.RDBFile(rdbx_file, transform_file=transform_file, query_str=query_str) as rdb:
-                    self.points = rdb.get_points_by_pulse(['x','y','z'], self.pulse_scanline, self.pulse_scanline_idx)
-            else:
-                self.points = rxp.get_points_by_pulse(['x','y','z'])
-
-        self.classify_ground(self.points['x'], self.points['y'], self.points['z'], self.count)
-
-    def _init_voxel_grid(self, bounds, voxelsize):
-        """
-        Initialize the voxel grid
-        """
-        self.bounds = nb.typed.List(bounds)
-        self.voxelsize = float(voxelsize)
-
-        self.nx = int( (bounds[3] - bounds[0]) // voxelsize)
-        self.ny = int( (bounds[4] - bounds[1]) // voxelsize)
-        self.nz = int( (bounds[5] - bounds[2]) // voxelsize)
-
-        self.voxdimx = bounds[3] - bounds[0]
-        self.voxdimy = bounds[4] - bounds[1]
-        self.voxdimz = bounds[5] - bounds[2]
-
-        self.nvox = int(self.nx * self.ny * self.nz)
-
-        self.profile.update(height=self.ny, width=self.nx, count=self.nz,
-            transform=Affine(voxelsize, 0.0, bounds[0], 0.0,
-            -voxelsize, bounds[4]), nodata=self.nodata)
-
-    def voxelize_scan(self, bounds, voxelsize, save_counts=True):
-        """
-        Voxelize the scan data
-        """
-        self._init_voxel_grid(bounds, voxelsize)
-        hits = np.zeros(self.nvox, dtype=float)
-        miss = np.zeros(self.nvox, dtype=float)
-        occl = np.zeros(self.nvox, dtype=float)
-        zeni = np.zeros(self.nvox, dtype=float)
-        phit = np.zeros(self.nvox, dtype=float)
-        pmiss = np.zeros(self.nvox, dtype=float)
-
-        run_traverse_voxels_tls(self.x0, self.y0, self.z0, self.ground, self.points['x'].data, 
-            self.points['y'].data, self.points['z'].data, self.dx, self.dy, self.dz, 
-            self.count, self.voxdimx, self.voxdimy, self.voxdimz, self.nx, self.ny, 
-            self.nz, self.bounds, self.voxelsize, hits, miss, occl, zeni, phit, pmiss)
-
-        self.voxelgrids = {}
-        nshots = hits + miss
-        nbeams = nshots + occl
-
-        self.voxelgrids['vwts'] = np.full(self.nvox, self.nodata, dtype=float)
-        np.add(phit, pmiss, out=self.voxelgrids['vwts'], where=nshots > 0)
-
-        self.voxelgrids['pgap'] = np.full(self.nvox, self.nodata, dtype=float)
-        np.divide(miss, nshots, out=self.voxelgrids['pgap'], where=nshots > 0)
-
-        self.voxelgrids['zeni'] = np.full(self.nvox, self.nodata, dtype=float)
-        np.divide(zeni, nbeams, out=self.voxelgrids['zeni'], where=nbeams > 0)
-
-        self.voxelgrids['vcls'] = self.classify_voxels(hits, miss, occl)
-
-        if save_counts:
-            self.voxelgrids['hits'] = hits
-            self.voxelgrids['miss'] = miss
-            self.voxelgrids['occl'] = occl
-            self.voxelgrids['phit'] = phit
-            self.voxelgrids['pmiss'] = pmiss
-
-    def classify_voxels(self, hits, miss, occl):
-        """
-        Classification of voxels
-        
-        Class       Value   Hits    Misses   Occluded
-        Observed    5       >0      >=0      >=0
-        Empty       4       =0      >0       >=0
-        Hidden      3       =0      =0       >0
-        Unobserved  2       =0      =0       =0
-        Ground      1
-        """
-        classification = np.full_like(hits, self.nodata)
-
-        idx = (hits > 0) & (miss >= 0) & (occl >= 0)
-        classification[idx] = 5
-
-        idx = (hits == 0) & (miss > 0) & (occl >= 0)
-        classification[idx] = 4
-
-        idx = (hits == 0) & (miss == 0) & (occl > 0)
-        classification[idx] = 3
-
-        idx = (hits == 0) & (miss == 0) & (occl == 0)
-        classification[idx] = 2
-
-        return classification
-
-    def write_grids(self, prefix):
-        """
-        Write the results to file
-        """
-        self.filenames = {}
-        new_shape = (self.nz, self.ny, self.nx)
-        for k in self.voxelgrids:
-            with rio.Env():
-                self.filenames[k] = f'{prefix}_{k}.tif'
-                with rio.open(self.filenames[k], 'w', **self.profile) as dst:
-                    dst.write(self.voxelgrids[k].reshape(new_shape))
-                    dst.build_overviews([2,4,8], Resampling.average)
-                    for i in range(self.nz):
-                        height = self.bounds[2] + i * self.voxelsize
-                        description = f'{height:.02f}m'
-                        dst.set_band_description(i+1, description)
-
-    
-class DLSVoxelGrid:
-    """
-    Voxel grid for a drone lidar (DLS) flightline.
- 
-    Parameters
-    ----------
-    profile : dict
-        Rasterio write profile.
- 
-    Usage
-    -----
-        grid = DLSVoxelGrid()
-        grid.add_laz_flightline('flight.laz')
-        grid.voxelize_scan(bounds, voxelsize=1.0)
-        grid.write_grids('output/flight')
-    """
- 
     def __init__(self, profile=None):
         self.profile = dict(RIO_DEFAULT_PROFILE if profile is None else profile)
-        self.nodata  = self.profile['nodata']
- 
-    # ── Data loading ──────────────────────────────────────────────────────────
- 
-    def add_laz_flightline(self, laz_file, voxel_bounds=None, t_scale=2.0):
-        """
-        Load a LAZ flightline and derive all voxel traversal inputs.
- 
-        Parameters
-        ----------
-        laz_file : str
-        voxel_bounds : (xmin, ymin, zmin, xmax, ymax, zmax) or None
-            Derived from file header if not provided.
-        t_scale : float
-            Passed to FlightlineProcessor; controls beam origin offset.
-        """
-        if voxel_bounds is None:
-            voxel_bounds = voxel_bounds_from_file(laz_file)
- 
-        self.proc = FlightlineProcessor(laz_file, voxel_bounds, t_scale=t_scale)
-        self.proc.process()
- 
-        # Pulse-level arrays (equivalent to TLS per-pulse fields)
-        pi = self.proc.pulse_inputs
-        self.x0    = pi['x0']   # array — varies with drone position
-        self.y0    = pi['y0']
-        self.z0    = pi['z0']
-        self.dx    = pi['dx']
-        self.dy    = pi['dy']
-        self.dz    = pi['dz']
-        self.count = pi['count']
- 
-        # Return-level coordinates shaped as (n_pulses, max_returns) for njit
-        pbp = self.proc.points_by_pulse
-        self.points = {'x': pbp['x'], 'y': pbp['y'], 'z': pbp['z']}
-        self.ground = pbp['gnd']
- 
-    # ── Voxel grid ────────────────────────────────────────────────────────────
- 
+        self.nodata = self.profile['nodata']
+
     def _init_voxel_grid(self, bounds, voxelsize):
-        self.bounds    = nb.typed.List(bounds)
+        bounds = np.asarray(bounds, dtype=np.float64)
         self.voxelsize = float(voxelsize)
-        self.nx = int((bounds[3] - bounds[0]) // voxelsize)
-        self.ny = int((bounds[4] - bounds[1]) // voxelsize)
-        self.nz = int((bounds[5] - bounds[2]) // voxelsize)
-        self.voxdimx = bounds[3] - bounds[0]
-        self.voxdimy = bounds[4] - bounds[1]
-        self.voxdimz = bounds[5] - bounds[2]
-        self.nvox = int(self.nx * self.ny * self.nz)
-        self.profile.update(
-            height=self.ny, width=self.nx, count=self.nz,
-            transform=Affine(voxelsize, 0.0, bounds[0], 0.0, -voxelsize, bounds[4]),
-            nodata=self.nodata,
-        )
- 
-    def voxelize_scan(self, bounds, voxelsize, save_counts=True):
-        """
-        Voxelize the flightline data.
- 
-        Parameters
-        ----------
-        bounds : (xmin, ymin, zmin, xmax, ymax, zmax)
-        voxelsize : float
-        save_counts : bool
-            If True, raw hit/miss/occl/phit/pmiss grids are retained.
- 
-        Note: run_traverse_voxels_dls differs from the TLS version in that
-        x0, y0, z0 are per-pulse arrays rather than scalars.
-        """
-        self._init_voxel_grid(bounds, voxelsize)
- 
-        hits  = np.zeros(self.nvox, dtype=float)
-        miss  = np.zeros(self.nvox, dtype=float)
-        occl  = np.zeros(self.nvox, dtype=float)
-        zeni  = np.zeros(self.nvox, dtype=float)
-        phit  = np.zeros(self.nvox, dtype=float)
-        pmiss = np.zeros(self.nvox, dtype=float)
- 
-        run_traverse_voxels_dls(
-            self.x0, self.y0, self.z0,
-            self.ground,
-            self.points['x'], self.points['y'], self.points['z'],
-            self.dx, self.dy, self.dz,
-            self.count,
-            self.voxdimx, self.voxdimy, self.voxdimz,
-            self.nx, self.ny, self.nz,
-            self.bounds, self.voxelsize,
-            hits, miss, occl, zeni, phit, pmiss,
-        )
- 
-        self.voxelgrids = {}
-        nshots = hits + miss
-        nbeams = nshots + occl
- 
-        self.voxelgrids['vwts'] = np.full(self.nvox, self.nodata, dtype=float)
-        np.add(phit, pmiss, out=self.voxelgrids['vwts'], where=nshots > 0)
- 
-        self.voxelgrids['pgap'] = np.full(self.nvox, self.nodata, dtype=float)
-        np.divide(miss, nshots, out=self.voxelgrids['pgap'], where=nshots > 0)
- 
-        self.voxelgrids['zeni'] = np.full(self.nvox, self.nodata, dtype=float)
-        np.divide(zeni, nbeams, out=self.voxelgrids['zeni'], where=nbeams > 0)
- 
-        self.voxelgrids['vcls'] = self.classify_voxels(hits, miss, occl)
- 
+        n = np.floor((bounds[3:6] - bounds[0:3]) / self.voxelsize + 1e-9).astype(int)
+        self.nx, self.ny, self.nz = int(n[0]), int(n[1]), int(n[2])
+        self.bounds = np.concatenate([bounds[0:3], bounds[0:3] + n * self.voxelsize])
+        self.nvox = self.nx * self.ny * self.nz
+        self.profile.update(height=self.ny, width=self.nx, count=self.nz,
+            transform=Affine(self.voxelsize, 0.0, self.bounds[0], 0.0,
+            -self.voxelsize, self.bounds[4]), nodata=self.nodata, interleave='band')
+
+    def _traverse(self, origin, use_first_return):
+        acc = np.zeros((NACC, self.nvox), dtype=np.float64)
+        traverse_pulses(self.x, self.y, self.z, self.gnd, self.start, self.count,
+            self.ux, self.uy, self.uz, np.asarray(origin, dtype=np.float64),
+            use_first_return, self.bounds[0:3].copy(), self.nx, self.ny, self.nz,
+            self.voxelsize, acc)
+        return acc
+
+    def _make_grids(self, acc, save_counts):
+        nd = self.nodata
+        path = acc[ACC_PATH]
+        nshots = acc[ACC_HITS] + acc[ACC_MISS]
+        observed = path > 0
+
+        g = {}
+        g['pgap'] = np.full(self.nvox, nd)
+        np.divide(acc[ACC_MISS], nshots, out=g['pgap'], where=nshots > 0)
+        g['zeni'] = np.full(self.nvox, nd)
+        np.divide(acc[ACC_PTHETA], path, out=g['zeni'], where=observed)
+        g['xtheta'] = np.full(self.nvox, nd)
+        np.divide(acc[ACC_PXT], path, out=g['xtheta'], where=observed)
+        g['vwts'] = np.where(observed, path, nd)
+        g['vcls'] = self.classify_voxels(acc[ACC_HITS], acc[ACC_MISS], acc[ACC_OCCL], acc[ACC_GND])
+        g['hits'] = acc[ACC_HITS]
+        g['path'] = path
+        g['path_cos'] = acc[ACC_PCOS]
+        g['path_sin'] = acc[ACC_PSIN]
         if save_counts:
-            self.voxelgrids['hits']  = hits
-            self.voxelgrids['miss']  = miss
-            self.voxelgrids['occl']  = occl
-            self.voxelgrids['phit']  = phit
-            self.voxelgrids['pmiss'] = pmiss
- 
-    def classify_voxels(self, hits, miss, occl):
+            g['miss'] = acc[ACC_MISS]
+            g['occl'] = acc[ACC_OCCL]
+            g['gnd'] = acc[ACC_GND]
+            g['nbeam'] = acc[ACC_NBEAM]
+            g['azim'] = np.full(self.nvox, nd)
+            az = np.mod(np.arctan2(acc[ACC_PUX], acc[ACC_PUY]), 2 * np.pi)
+            g['azim'][observed] = az[observed]
+        self.voxelgrids = g
+
+    def classify_voxels(self, hits, miss, occl, gnd):
         """
-        Classification of voxels.
- 
-        Class       Value   Hits    Misses   Occluded
-        Observed    5       >0      >=0      >=0
-        Empty       4       =0      >0       >=0
-        Hidden      3       =0      =0       >0
-        Unobserved  2       =0      =0       =0
-        Ground      1
+        Class       Value   Hits    Misses   Occluded   Ground
+        Observed    5       >0      >=0      >=0        >=0
+        Empty       4       =0      >0       >=0        =0
+        Hidden      3       =0      =0       >0         =0
+        Unobserved  2       =0      =0       =0         =0
+        Ground      1       =0      >=0      >=0        >0
         """
-        classification = np.full_like(hits, self.nodata)
-        classification[(hits > 0)]                               = 5
-        classification[(hits == 0) & (miss > 0)]                = 4
-        classification[(hits == 0) & (miss == 0) & (occl > 0)]  = 3
-        classification[(hits == 0) & (miss == 0) & (occl == 0)] = 2
-        return classification
- 
+        c = np.full_like(hits, self.nodata)
+        c[hits > 0] = 5
+        c[(hits == 0) & (miss > 0)] = 4
+        c[(hits == 0) & (miss == 0) & (occl > 0)] = 3
+        c[(hits == 0) & (miss == 0) & (occl == 0)] = 2
+        c[(hits == 0) & (gnd > 0)] = 1
+        return c
+
     def write_grids(self, prefix):
-        """Write voxel grids to GeoTIFF files."""
+        """Write each grid to {prefix}_{name}.tif (north-up, one band per layer)."""
         self.filenames = {}
-        new_shape = (self.nz, self.ny, self.nx)
+        shape = (self.nz, self.ny, self.nx)
         for k, grid in self.voxelgrids.items():
             self.filenames[k] = f'{prefix}_{k}.tif'
             with rio.Env():
                 with rio.open(self.filenames[k], 'w', **self.profile) as dst:
-                    dst.write(grid.reshape(new_shape))
-                    dst.build_overviews([2, 4, 8], Resampling.average)
+                    dst.write(grid.reshape(shape)[:, ::-1, :].astype(self.profile['dtype']))
+                    levels = overview_levels(self.nx, self.ny)
+                    if levels:
+                        dst.build_overviews(levels, Resampling.average)
                     for i in range(self.nz):
-                        height = self.bounds[2] + i * self.voxelsize
-                        dst.set_band_description(i + 1, f'{height:.2f}m')
+                        dst.set_band_description(i + 1, f'{self.bounds[2] + i * self.voxelsize:.2f}m')
 
 
-class FlightlineProcessor:
+class TLSVoxelGrid(_VoxelGridBase):
     """
-    Derives voxel traversal inputs from a single drone lidar LAZ flightline.
- 
-    Parameters
-    ----------
-    path : str
-    voxel_bounds : (xmin, ymin, zmin, xmax, ymax, zmax)
-    t_scale : float
-        Beam origin is placed t_scale * grid_diagonal behind each return.
- 
+    Voxel grid of a RIEGL TLS scan position.
+    """
+    def __init__(self, dtm_filename=None, profile=None):
+        super().__init__(profile=profile)
+        self.dtm_filename = dtm_filename
+
+    def classify_ground(self, thres=0.25):
+        """Flag returns below the DTM + thres as ground."""
+        if self.dtm_filename is None:
+            self.gnd = np.zeros(self.x.shape[0], dtype=bool)
+            return
+        with rio.open(self.dtm_filename, 'r') as src:
+            dtm = src.read(1).astype(np.float64)
+            if src.nodata is not None:
+                dtm[dtm == src.nodata] = np.nan
+            zg = sample_raster(self.x, self.y, dtm, src.bounds.left, src.bounds.top, src.res[0])
+        self.gnd = self.z < zg + thres
+
+    def add_riegl_scan_position(self, rxp_file, transform_file, rdbx_file=None, query_str=None):
+        """Add a scan position from RXP (and optionally MTA-corrected RDBX) files."""
+        with riegl_io.RXPFile(rxp_file, transform_file=transform_file, query_str=query_str) as rxp:
+            self.ux = rxp.get_data('beam_direction_x').astype(np.float32)
+            self.uy = rxp.get_data('beam_direction_y').astype(np.float32)
+            self.uz = rxp.get_data('beam_direction_z').astype(np.float32)
+            t = rxp.transform
+            self.origin = np.zeros(3) if t is None else np.array(t[3, 0:3], dtype=np.float64)
+            npulse = self.ux.shape[0]
+            if rdbx_file:
+                scanline = rxp.get_data('scanline')
+                scanline_idx = rxp.get_data('scanline_idx')
+                with riegl_io.RDBFile(rdbx_file, transform_file=transform_file, query_str=query_str) as rdb:
+                    m = np.int64(np.max(scanline_idx)) + 1
+                    pid = scanline.astype(np.int64) * m + scanline_idx
+                    sort_idx = np.argsort(pid)
+                    rid = rdb.get_data('scanline').astype(np.int64) * m + rdb.get_data('scanline_idx')
+                    pos = np.searchsorted(pid, rid, sorter=sort_idx)
+                    pos = np.clip(pos, 0, npulse - 1)
+                    pulse_idx = sort_idx[pos]
+                    valid = pid[pulse_idx] == rid
+                    self._set_points(pulse_idx[valid], rdb.get_data('target_index')[valid],
+                        rdb.get_data('x')[valid], rdb.get_data('y')[valid], rdb.get_data('z')[valid], npulse)
+            else:
+                count = rxp.get_data('target_count')
+                pulse_idx = np.repeat(np.arange(npulse, dtype=np.int64), count)
+                self._set_points(pulse_idx, rxp.get_data('target_index'), rxp.get_data('x'),
+                    rxp.get_data('y'), rxp.get_data('z'), npulse)
+        self.classify_ground()
+
+    def _set_points(self, pulse_idx, target_index, x, y, z, npulse):
+        order = np.lexsort((target_index, pulse_idx))
+        self.x = np.asarray(x, dtype=np.float64)[order]
+        self.y = np.asarray(y, dtype=np.float64)[order]
+        self.z = np.asarray(z, dtype=np.float64)[order]
+        count = np.bincount(pulse_idx, minlength=npulse)
+        self.count = np.minimum(count, 255).astype(np.uint8)
+        self.start = (np.cumsum(count) - count).astype(np.int64)
+
+    def voxelize_scan(self, bounds, voxelsize, save_counts=True):
+        """Voxelize the scan on the grid defined by bounds and voxelsize."""
+        self._init_voxel_grid(bounds, voxelsize)
+        acc = self._traverse(self.origin, False)
+        self._make_grids(acc, save_counts)
+
+
+class DLSVoxelGrid(_VoxelGridBase):
+    """
+    Voxel grid of a drone lidar (DLS) LAZ flightline.
+
     Usage
     -----
-        proc = FlightlineProcessor(path, voxel_bounds)
-        proc.process()
-        proc.voxelize(my_njit_fn)
+        grid = DLSVoxelGrid()
+        grid.voxelize_flightline('flight.laz', bounds, 0.5, spill_dir='/scratch/dir',
+                                 dtm_filename='dtm.tif')
+        grid.write_grids('output/flight')
+
+    or, holding the cropped flightline in memory:
+
+        grid.add_laz_flightline('flight.laz', bounds, dtm_filename='dtm.tif')
+        grid.voxelize_scan(bounds, 0.5)
     """
- 
-    FIELDS = ['X', 'Y', 'Z', 'gps_time', 'return_number',
-              'number_of_returns', 'classification', 'edge_of_flight_line']
- 
-    def __init__(self, path, voxel_bounds, t_scale=2.0):
-        self.path         = path
-        self.voxel_bounds = voxel_bounds
-        self.t_scale      = t_scale
-        self.inputs       = None   # populated by process()
- 
-    # ── Public interface ──────────────────────────────────────────────────────
- 
-    def process(self):
-        """Run the full pipeline. Results stored in self.inputs."""
-        self._read_points()
-        self._sort_points()
-        self._build_pulse_table()
-        self._assign_segments()
-        self._compute_directions()
-        self._interpolate_directions()
-        self._compute_beam_origins()
-        self._expand_to_returns()
-        print(f"  {self.n_pulses:,} pulses  |  {len(self.x1):,} returns  |  "
-              f"{self._multi.sum():,} multi-return  |  {(~self._multi).sum():,} single-return")
-        return self
- 
-    def voxelize(self, njit_fn, *args, **kwargs):
+    ZENITH_EDGES = np.arange(0, 91, 1.0)
+    AZIMUTH_EDGES = np.arange(0, 361, 10.0)
+
+    def add_laz_flightline(self, laz_file, voxel_bounds, **kwargs):
+        """Load the pulses of a flightline that can cross voxel_bounds (see FlightlineProcessor)."""
+        proc = FlightlineProcessor(laz_file, voxel_bounds, **kwargs).process()
+        self.x, self.y, self.z, self.gnd = proc.x, proc.y, proc.z, proc.gnd
+        self.start, self.count = proc.start, proc.count
+        self.ux, self.uy, self.uz = proc.ux, proc.uy, proc.uz
+        self.qa = proc.qa
+        self.time = proc.time
+        self.summary = proc.summary
+
+    def voxelize_scan(self, bounds, voxelsize, save_counts=True):
+        """Voxelize the loaded flightline on the grid defined by bounds and voxelsize."""
+        self._init_voxel_grid(bounds, voxelsize)
+        acc = np.zeros((NACC, self.nvox), dtype=np.float64)
+        self.angle_hist = np.zeros((self.ZENITH_EDGES.size - 1, self.AZIMUTH_EDGES.size - 1), dtype=np.int64)
+        self._accumulate(self, self.qa > 0, acc)
+        self._make_grids(acc, save_counts)
+
+    def voxelize_flightline(self, laz_file, bounds, voxelsize, spill_dir, bucket_seconds=2.0,
+                            save_counts=True, **kwargs):
         """
-        Call a numba njit voxelization function with the derived inputs.
- 
-        The njit function is expected to accept:
-            x0, y0, z0, x1, y1, z1, dx, dy, dz, gnd, point_count
-        followed by any additional positional or keyword arguments.
- 
-        Parameters
-        ----------
-        njit_fn : callable
-            Compiled numba function.
-        *args, **kwargs
-            Passed through to njit_fn after the standard inputs.
- 
-        Returns
-        -------
-        Whatever njit_fn returns.
+        Voxelize a flightline one gps_time bucket at a time (see
+        FlightlineProcessor.iter_buckets); spill_dir holds the temporary bucket files.
         """
-        if self.inputs is None:
-            raise RuntimeError("Call process() before voxelize().")
-        inp = self.inputs
-        return njit_fn(
-            inp['x0'], inp['y0'], inp['z0'],
-            inp['x1'], inp['y1'], inp['z1'],
-            inp['dx'], inp['dy'], inp['dz'],
-            inp['gnd'], inp['point_count'],
-            *args, **kwargs,
-        )
- 
-    @property
-    def pulse_inputs(self):
-        """
-        Pulse-level arrays, available after process().
-        Used by DLSVoxelGrid to match the TLS per-pulse interface.
-        """
-        if self.inputs is None:
-            raise RuntimeError("Call process() first.")
-        return dict(
-            x0=self._p_x0, y0=self._p_y0, z0=self._p_z0,
-            dx=self._p_ux, dy=self._p_uy, dz=self._p_uz,
-            count=self._actual_counts,  # actual observed, not declared number_of_returns
-            x=self._p_x_first, y=self._p_y_first, z=self._p_z_first,
-        )
- 
-    @property
-    def points_by_pulse(self):
-        """
-        Return-level arrays reshaped to (n_pulses, max_returns) as expected
-        by run_traverse_voxels_dls.  Ragged pulses are padded with 0 / False.
- 
-        Returns
-        -------
-        dict with keys: x, y, z (float64) and gnd (bool)
-        """
-        if self.inputs is None:
-            raise RuntimeError("Call process() first.")
-        max_ret = int(self._actual_counts.max())
-        n = self.n_pulses
- 
-        x   = np.zeros((n, max_ret), dtype=np.float64)
-        y   = np.zeros((n, max_ret), dtype=np.float64)
-        z   = np.zeros((n, max_ret), dtype=np.float64)
-        gnd = np.zeros((n, max_ret), dtype=bool)
- 
-        for i in range(n):
-            s = self._first_idx[i]
-            e = self._last_idx[i] + 1
-            k = e - s
-            x[i, :k]   = self.x1[s:e]
-            y[i, :k]   = self.y1[s:e]
-            z[i, :k]   = self.z1[s:e]
-            gnd[i, :k] = self.inputs['gnd'][s:e].astype(bool)
- 
-        return dict(x=x, y=y, z=z, gnd=gnd)
- 
-    # ── Pipeline steps ────────────────────────────────────────────────────────
- 
-    def _read_points(self):
-        buf = {f: [] for f in self.FIELDS}
-        with laspy.open(self.path) as f:
-            self._scale  = f.header.scale
-            self._offset = f.header.offset
-            for chunk in f.chunk_iterator(1_000_000):
-                for field in self.FIELDS:
-                    buf[field].append(np.asarray(chunk[field]))
-        self._d = {f: np.concatenate(buf[f]) for f in self.FIELDS}
- 
-    def _sort_points(self):
-        d = self._d
-        x1 = d['X'] * self._scale[0] + self._offset[0]
-        y1 = d['Y'] * self._scale[1] + self._offset[1]
-        z1 = d['Z'] * self._scale[2] + self._offset[2]
-        del d['X'], d['Y'], d['Z']
- 
-        order = np.lexsort((d['return_number'], d['gps_time']))
-        self.x1 = x1[order]
-        self.y1 = y1[order]
-        self.z1 = z1[order]
-        self._d = {f: d[f][order] for f in d}
-        del order
- 
-    def _build_pulse_table(self):
-        d = self._d
-        _, first_idx = np.unique(d['gps_time'], return_index=True)
-        last_idx          = np.empty_like(first_idx)
-        last_idx[:-1]     = first_idx[1:] - 1
-        last_idx[-1]      = len(self.x1) - 1
- 
-        actual_counts = last_idx - first_idx + 1
-        if actual_counts.sum() != len(self.x1):
-            raise ValueError(
-                f"Return count mismatch: {actual_counts.sum():,} != {len(self.x1):,}")
- 
-        self.n_pulses      = len(first_idx)
-        self._first_idx    = first_idx
-        self._last_idx     = last_idx
-        self._actual_counts = actual_counts
-        self._p_time       = d['gps_time'][first_idx]
-        self._p_nret       = d['number_of_returns'][first_idx]
-        self._p_edge       = np.maximum.reduceat(d['edge_of_flight_line'], first_idx)
-        self._p_x_first    = self.x1[first_idx]
-        self._p_y_first    = self.y1[first_idx]
-        self._p_z_first    = self.z1[first_idx]
-        self._p_x_last     = self.x1[last_idx]
-        self._p_y_last     = self.y1[last_idx]
-        self._p_z_last     = self.z1[last_idx]
- 
-    def _assign_segments(self):
-        p_segment       = np.cumsum(self._p_edge)
-        seg_starts      = np.concatenate([[0], np.where(np.diff(p_segment))[0] + 1])
-        seg_ends        = np.concatenate([seg_starts[1:], [self.n_pulses]])
-        self._p_segment = p_segment
-        self._seg_starts = seg_starts
-        self._seg_ends   = seg_ends
- 
-    def _compute_directions(self):
-        """Direction vectors for multi-return pulses."""
-        n = self.n_pulses
-        self._p_ux = np.full(n, np.nan)
-        self._p_uy = np.full(n, np.nan)
-        self._p_uz = np.full(n, np.nan)
- 
-        multi = self._p_nret > 1
-        self._multi = multi
- 
-        vx = self._p_x_last[multi] - self._p_x_first[multi]
-        vy = self._p_y_last[multi] - self._p_y_first[multi]
-        vz = self._p_z_last[multi] - self._p_z_first[multi]
-        self._p_ux[multi], self._p_uy[multi], self._p_uz[multi] = _normalize(vx, vy, vz)
- 
-    def _interpolate_directions(self):
-        """
-        Temporal interpolation within flightline segments for single-return
-        pulses. Falls back to 2D spatial interpolation for segments that
-        contain no multi-return pulses at all.
-        """
-        multi  = self._multi
-        single = ~multi
-        n_spatial_fallback = 0
- 
-        for s, e in zip(self._seg_starts, self._seg_ends):
-            seg_multi  = np.where(multi[s:e])[0] + s
-            seg_single = np.where(single[s:e])[0] + s
-            if len(seg_single) == 0:
-                continue
-            if len(seg_multi) == 0:
-                n_spatial_fallback += len(seg_single)
-                continue
- 
-            anchor_t = self._p_time[seg_multi]
-            query_t  = self._p_time[seg_single]
-            for arr in [self._p_ux, self._p_uy, self._p_uz]:
-                arr[seg_single] = np.interp(query_t, anchor_t, arr[seg_multi])
- 
-            dx, dy, dz = _normalize(
-                self._p_ux[seg_single],
-                self._p_uy[seg_single],
-                self._p_uz[seg_single],
-            )
-            self._p_ux[seg_single] = dx
-            self._p_uy[seg_single] = dy
-            self._p_uz[seg_single] = dz
- 
-        self._spatial_fallback(n_spatial_fallback)
- 
-    def _spatial_fallback(self, n_flagged):
-        """2D spatial interpolation for segments with no multi-return pulses."""
-        still_nan = np.isnan(self._p_ux)
-        if not still_nan.any():
-            return
- 
-        print(f"  Spatial post-processing {still_nan.sum():,} pulses "
-              f"({n_flagged:,} flagged during segment pass)")
- 
-        anchor_mask = self._multi & ~np.isnan(self._p_ux)
-        anchor_xy   = np.column_stack([
-            (self._p_x_first[anchor_mask] + self._p_x_last[anchor_mask]) / 2,
-            (self._p_y_first[anchor_mask] + self._p_y_last[anchor_mask]) / 2,
-        ])
-        query_xy = np.column_stack([
-            self._p_x_first[still_nan], self._p_y_first[still_nan]
-        ])
- 
-        for arr in [self._p_ux, self._p_uy, self._p_uz]:
-            lin  = LinearNDInterpolator(anchor_xy, arr[anchor_mask], fill_value=np.nan)
-            vals = lin(query_xy)
-            outside = np.isnan(vals)
-            if outside.any():
-                nn = NearestNDInterpolator(anchor_xy, arr[anchor_mask])
-                vals[outside] = nn(query_xy[outside])
-            arr[still_nan] = vals
- 
-        dx, dy, dz = _normalize(
-            self._p_ux[still_nan], self._p_uy[still_nan], self._p_uz[still_nan]
-        )
-        self._p_ux[still_nan] = dx
-        self._p_uy[still_nan] = dy
-        self._p_uz[still_nan] = dz
- 
-    def _compute_beam_origins(self):
-        xmin, ymin, zmin, xmax, ymax, zmax = self.voxel_bounds
-        diag = np.sqrt((xmax-xmin)**2 + (ymax-ymin)**2 + (zmax-zmin)**2)
-        t = diag * self.t_scale
- 
-        # Beam origin: project back along unit direction to outside the grid
-        self._p_x0 = self._p_x_first - t * self._p_ux
-        self._p_y0 = self._p_y_first - t * self._p_uy
-        self._p_z0 = self._p_z_first - t * self._p_uz
- 
-        # Displacement vectors from x0 to x_last so that t=1 reaches the
-        # last return — required by the voxel traversal parameterisation
-        self._p_dx = self._p_x_last - self._p_x0
-        self._p_dy = self._p_y_last - self._p_y0
-        self._p_dz = self._p_z_last - self._p_z0
- 
-    def _expand_to_returns(self):
-        """Expand all pulse-level arrays to per-return using actual counts."""
-        ri = np.repeat(np.arange(self.n_pulses), self._actual_counts)
-        self.inputs = dict(
-            x0=self._p_x0[ri], y0=self._p_y0[ri], z0=self._p_z0[ri],
-            x1=self.x1,        y1=self.y1,         z1=self.z1,
-            dx=self._p_ux[ri], dy=self._p_uy[ri],  dz=self._p_uz[ri],
-            gnd=(self._d['classification'] == 2).astype(np.uint8),
-            point_count=self._p_nret[ri],
-        )
+        self._init_voxel_grid(bounds, voxelsize)
+        acc = np.zeros((NACC, self.nvox), dtype=np.float64)
+        self.angle_hist = np.zeros((self.ZENITH_EDGES.size - 1, self.AZIMUTH_EDGES.size - 1), dtype=np.int64)
+        proc = FlightlineProcessor(laz_file, bounds, **kwargs)
+        for ps in proc.iter_buckets(spill_dir, bucket_seconds=bucket_seconds):
+            self._accumulate(ps, (ps.qa > 0) & ps.core, acc)
+        self.summary = proc.summary
+        self._make_grids(acc, save_counts)
+
+    def _accumulate(self, ps, use, acc):
+        ux = np.where(use, ps.ux, np.float32(np.nan))
+        traverse_pulses(ps.x, ps.y, ps.z, ps.gnd, ps.start, ps.count, ux, ps.uy, ps.uz,
+            np.zeros(3), True, self.bounds[0:3].copy(), self.nx, self.ny, self.nz,
+            self.voxelsize, acc)
+        cross = rays_cross_grid(ps.x, ps.y, ps.z, ps.start, ps.count, ux, ps.uy, ps.uz,
+            self.bounds)
+        zen = np.degrees(np.arccos(np.minimum(np.abs(ps.uz[cross]), 1)))
+        azi = np.mod(np.degrees(np.arctan2(ps.ux[cross], ps.uy[cross])), 360)
+        self.angle_hist += np.histogram2d(zen, azi, bins=(self.ZENITH_EDGES, self.AZIMUTH_EDGES))[0].astype(np.int64)
+
+    def write_summary(self, prefix):
+        """Write the flightline summary and zenith/azimuth histogram of grid-crossing pulses."""
+        rep = dict(summary=self.summary, bounds=self.bounds.tolist(), voxelsize=self.voxelsize,
+                   zenith_edges=self.ZENITH_EDGES.tolist(), azimuth_edges=self.AZIMUTH_EDGES.tolist(),
+                   angle_hist=self.angle_hist.tolist())
+        fn = f'{prefix}_summary.json'
+        with open(fn, 'w') as f:
+            json.dump(rep, f)
+        return fn
 
 
-@njit
-def extract_ground_by_pulse(x, y, target_count, data, xmin, ymax, binsize, nodata=-9999):
-    outdata = np.full(x.shape, nodata, dtype=data.dtype)
-    for i in range(target_count.shape[0]):
-        for j in range(target_count[i]):
-            col = int( (x[i,j] - xmin) // binsize )
-            row = int( (ymax - y[i,j]) // binsize )
-            if (row >= 0) & (col >= 0) & (row < data.shape[0]) & (col < data.shape[1]):
-                outdata[i,j] = data[row, col]
-    return outdata
-
-
-@njit
+@njit(cache=True)
 def create_ground_voxel_grid(nx, ny, nz, xmin, ymax, zmin, binsize,
     dem, dem_xmin, dem_ymax, dem_binsize):
-    outdata = np.zeros((nz,ny,nx), dtype=np.float32)
-    zval = zmin + np.arange(nz, dtype=np.float32) * binsize + binsize / 2
+    """Flag voxels (north-up) whose centre lies below the DEM (1)."""
+    outdata = np.zeros((nz, ny, nx), dtype=np.float32)
     for z in range(nz):
+        zc = zmin + z * binsize + binsize / 2
         for y in range(ny):
+            yc = ymax - (y * binsize + binsize / 2)
+            dem_row = int((dem_ymax - yc) // dem_binsize)
             for x in range(nx):
                 xc = xmin + (x * binsize + binsize / 2)
-                yc = ymax - (y * binsize + binsize / 2)
-                dem_col = int( (xc - dem_xmin) // dem_binsize )
-                dem_row = int( (dem_ymax - yc) // dem_binsize )
+                dem_col = int((xc - dem_xmin) // dem_binsize)
                 if (dem_row >= 0) & (dem_col >= 0) & (dem_row < dem.shape[0]) & (dem_col < dem.shape[1]):
-                    dem_val = dem[dem_row, dem_col]
-                    if zval[z] < dem_val:
-                        outdata[z,y,x] = 1
+                    if zc < dem[dem_row, dem_col]:
+                        outdata[z, y, x] = 1
     return outdata
 
 
-@njit
-def run_traverse_voxels_tls(x0, y0, z0, gnd, x, y, z, dx, dy, dz, target_count, voxdimx, voxdimy, voxdimz,
-                        nx, ny, nz, bounds, voxelsize, hits, miss, occl, zeni, phit, pmiss):
+@njit(cache=True)
+def _slab(o, d, hi, tin, tout):
+    if d != 0.0:
+        t1 = -o / d
+        t2 = (hi - o) / d
+        if t1 > t2:
+            t1, t2 = t2, t1
+        if t1 > tin:
+            tin = t1
+        if t2 < tout:
+            tout = t2
+    elif o < 0.0 or o > hi:
+        tout = -np.inf
+    return tin, tout
+
+
+@njit(cache=True)
+def _axis_init(p, d, i, vs, tin):
+    if d > 0:
+        return 1, tin + ((i + 1) * vs - p) / d, vs / d
+    elif d < 0:
+        return -1, tin + (i * vs - p) / d, -vs / d
+    return 0, np.inf, np.inf
+
+
+@njit(cache=True)
+def traverse_pulses(x, y, z, gnd, start, count, ux, uy, uz, origin, use_first_return,
+                    bmin, nx, ny, nz, vs, acc):
     """
-    Loop through each pulse and run voxel traversal
+    Accumulate per-voxel beam statistics along each pulse (Amanatides and Woo, 1987).
+
+    Each pulse is a ray with unit direction u from origin, or from its first
+    return when use_first_return is True (the ray then extends upstream of the
+    first return). Returns are placed by their distance along the ray, each
+    intercepting 1 / count of the beam; returns before grid entry reduce the
+    beam entering the grid. Pulses with a NaN direction are skipped.
+
+    acc rows (per voxel):
+      hits    canopy-intercepted beam weight
+      miss    beam weight leaving the voxel
+      occl    beam weight intercepted before the voxel
+      gnd     ground-intercepted beam weight
+      nbeam   number of pulses entering the voxel
+      path    free path length (beam weight x distance travelled in the voxel)
+      path_cos, path_sin, path_xtheta, path_theta, path_ux, path_uy
+              free path weighted |cos(theta)|, (2/pi) sin(theta), (2/pi) tan(theta),
+              theta, ux and uy, with theta = arccos(|uz|)
     """
-    max_nreturns = np.max(target_count)
-    vox_idx = np.empty(max_nreturns, dtype=np.uint32)
-    for i in range(target_count.shape[0]):        
-        traverse_voxels(x0, y0, z0, gnd[i,:], x[i,:], y[i,:], z[i,:], dx[i], dy[i], dz[i],
-            nx, ny, nz, voxdimx, voxdimy, voxdimz, bounds, voxelsize, target_count[i],
-            hits, miss, occl, zeni, phit, pmiss, vox_idx)
-
-
-@njit
-def run_traverse_voxels_dls(x0, y0, z0, gnd, x, y, z, dx, dy, dz, target_count, voxdimx, voxdimy, voxdimz,
-                        nx, ny, nz, bounds, voxelsize, hits, miss, occl, zeni, phit, pmiss):
-    """
-    Loop through each pulse and run voxel traversal
-    """
-    max_nreturns = np.max(target_count)
-    vox_idx = np.empty(max_nreturns, dtype=np.uint32)
-    for i in range(target_count.shape[0]):        
-        traverse_voxels(x0[i], y0[i], z0[i], gnd[i,:], x[i,:], y[i,:], z[i,:], dx[i], dy[i], dz[i],
-            nx, ny, nz, voxdimx, voxdimy, voxdimz, bounds, voxelsize, target_count[i],
-            hits, miss, occl, zeni, phit, pmiss, vox_idx)    
-
-
-@njit
-def traverse_voxels(x0, y0, z0, gnd, x1, y1, z1, dx, dy, dz, nx, ny, nz, voxdimx, voxdimy, voxdimz,
-                    bounds, voxelsize, target_count, hits, miss, occl, zeni, phit, pmiss, vox_idx):
-    """
-    A fast and simple voxel traversal algorithm through a 3D voxel space (J. Amanatides and A. Woo, 1987)
-    Inputs:
-       x0, y0, z0
-       gnd
-       x1, y1, z1
-       dx, dy, dz
-       nX, nY, nZ
-       bounds
-       voxelsize
-       target_count
-       vox_idx
-    Outputs:
-       hits
-       miss
-       occl
-       zeni
-       phit
-       pmiss
-    """
-    intersect, tmin, tmax = grid_intersection(x0, y0, z0, dx, dy, dz, bounds)    
-    if intersect:
-        
-        tmin = max(0, tmin)
-        tmax = min(1, tmax)
-
-        startX = x0 + tmin * dx
-        startY = y0 + tmin * dy
-        startZ = z0 + tmin * dz
-
-        r = np.sqrt(dx**2 + dy**2 + dz**2)
-        theta = np.arccos(dz / r)
-        
-        x = np.floor( ((startX - bounds[0]) / voxdimx) * nx )
-        y = np.floor( ((startY - bounds[1]) / voxdimy) * ny )
-        z = np.floor( ((startZ - bounds[2]) / voxdimz) * nz )              
-        
-        for i in range(target_count):
-            px = np.floor( ((x1[i] - bounds[0]) / voxdimx) * nx )
-            py = np.floor( ((y1[i] - bounds[1]) / voxdimy) * ny )
-            pz = np.floor( ((z1[i] - bounds[2]) / voxdimz) * nz )
-            vox_idx[i] = int(px + nx * py + nx * ny * pz)   
-        
-        if x == nx:
-            x -= 1
-        if y == ny:
-            y -= 1           
-        if z == nz:
-            z -= 1
-         
-        if dx > 0:
-            tVoxelX = (x + 1) / nx
-            stepX = 1
-        elif dx < 0:
-            tVoxelX = x / nx
-            stepX = -1
+    gx = nx * vs
+    gy = ny * vs
+    gz = nz * vs
+    two_pi = 2.0 / np.pi
+    for p in range(start.shape[0]):
+        dx = np.float64(ux[p])
+        dy = np.float64(uy[p])
+        dz = np.float64(uz[p])
+        if dx != dx:
+            continue
+        n = count[p]
+        s = start[p]
+        if use_first_return:
+            if n == 0:
+                continue
+            ox = x[s] - bmin[0]
+            oy = y[s] - bmin[1]
+            oz = z[s] - bmin[2]
+            tin = -np.inf
         else:
-            tVoxelX = (x + 1) / nx
-            stepX = 0
-        
-        if dy > 0:
-            tVoxelY = (y + 1) / ny
-            stepY = 1
-        elif dy < 0:
-            tVoxelY = y / ny
-            stepY = -1
-        else:
-            tVoxelY = (y + 1) / ny
-            stepY = 0  
-        
-        if dz > 0:
-            tVoxelZ = (z + 1) / nz
-            stepZ = 1
-        elif dz < 0:
-            tVoxelZ = z / nz
-            stepZ = -1
-        else:
-            tVoxelZ = (z + 1) / nz
-            stepZ = 0            
-        
-        voxelMaxX = bounds[0] + tVoxelX * voxdimx
-        voxelMaxY = bounds[1] + tVoxelY * voxdimy
-        voxelMaxZ = bounds[2] + tVoxelZ * voxdimz
-        
-        if dx == 0:
-            tMaxX = tmax
-            tDeltaX = tmax
-        else:
-            tMaxX = tmin + (voxelMaxX - startX) / dx
-            tDeltaX = voxelsize / abs(dx)
-            
-        if dy == 0:    
-            tMaxY = tmax
-            tDeltaY = tmax
-        else:
-            tMaxY = tmin + (voxelMaxY - startY) / dy
-            tDeltaY = voxelsize / abs(dy)
+            ox = origin[0] - bmin[0]
+            oy = origin[1] - bmin[1]
+            oz = origin[2] - bmin[2]
+            tin = 0.0
+        tout = np.inf
+        tin, tout = _slab(ox, dx, gx, tin, tout)
+        tin, tout = _slab(oy, dy, gy, tin, tout)
+        tin, tout = _slab(oz, dz, gz, tin, tout)
+        if not (tin < tout):
+            continue
 
-        if dz == 0:
-            tMaxZ = tmax
-            tDeltaZ = tmax
-        else:
-            tMaxZ = tmin + (voxelMaxZ - startZ) / dz
-            tDeltaZ = voxelsize / abs(dz)
+        cos_t = abs(dz)
+        sin_t = np.sqrt(max(0.0, 1.0 - cos_t * cos_t))
+        theta = np.arccos(min(cos_t, 1.0))
+        xt = two_pi * sin_t / cos_t if cos_t > 0 else MAX_XTHETA
+        if xt > MAX_XTHETA:
+            xt = MAX_XTHETA
+        w = 1.0 / n if n > 0 else 0.0
 
-        wmiss = 1.0
-        woccl = 0.0
-        if target_count > 0:
-            w = 1.0 / target_count
-        else:
-            w = 0.0
-       
-        startR = min(tMaxX, tMaxY, tMaxZ)
+        wm = 1.0
+        k = 0
+        while k < n:
+            tk = (x[s + k] - bmin[0] - ox) * dx + (y[s + k] - bmin[1] - oy) * dy + (z[s + k] - bmin[2] - oz) * dz
+            if tk >= tin:
+                break
+            wm -= w
+            k += 1
+        if wm < 0:
+            wm = 0.0
 
-        last_voxel_hit = False
-        last_canopy_hit_num = 0.0
-        while (x < nx) and (x >= 0) and (y < ny) and (y >= 0) and (z < nz) and (z >= 0):
-            
-            vidx = int(x + nx * y + nx * ny * z)
-            zeni[vidx] += theta 
-            
-            if tMaxX < tMaxY:
-                if tMaxX < tMaxZ:
-                    x += stepX
-                    tMaxX += tDeltaX
-                else:
-                    z += stepZ
-                    tMaxZ += tDeltaZ
+        px = ox + tin * dx
+        py = oy + tin * dy
+        pz = oz + tin * dz
+        ix = min(max(int(np.floor(px / vs)), 0), nx - 1)
+        iy = min(max(int(np.floor(py / vs)), 0), ny - 1)
+        iz = min(max(int(np.floor(pz / vs)), 0), nz - 1)
+        sx, tmx, tdx = _axis_init(px, dx, ix, vs, tin)
+        sy, tmy, tdy = _axis_init(py, dy, iy, vs, tin)
+        sz, tmz, tdz = _axis_init(pz, dz, iz, vs, tin)
+
+        t = tin
+        while True:
+            vidx = ix + nx * (iy + ny * iz)
+            if tmx <= tmy and tmx <= tmz:
+                tn = tmx
+                axis = 0
+            elif tmy <= tmz:
+                tn = tmy
+                axis = 1
             else:
-                if tMaxY < tMaxZ:
-                    y += stepY
-                    tMaxY += tDeltaY
+                tn = tmz
+                axis = 2
+            last = tn >= tout
+            if last:
+                tn = tout
+
+            acc[ACC_OCCL, vidx] += 1.0 - wm
+            acc[ACC_NBEAM, vidx] += 1.0
+            fp = 0.0
+            tp = t
+            while k < n:
+                tk = (x[s + k] - bmin[0] - ox) * dx + (y[s + k] - bmin[1] - oy) * dy + (z[s + k] - bmin[2] - oz) * dz
+                if tk >= tn:
+                    break
+                if tk > tp:
+                    fp += wm * (tk - tp)
+                    tp = tk
+                wm -= w
+                if wm < 0:
+                    wm = 0.0
+                if gnd[s + k]:
+                    acc[ACC_GND, vidx] += w
                 else:
-                    z += stepZ
-                    tMaxZ += tDeltaZ
+                    acc[ACC_HITS, vidx] += w
+                k += 1
+            if tn > tp:
+                fp += wm * (tn - tp)
+            acc[ACC_MISS, vidx] += wm
+            acc[ACC_PATH, vidx] += fp
+            acc[ACC_PCOS, vidx] += fp * cos_t
+            acc[ACC_PSIN, vidx] += fp * two_pi * sin_t
+            acc[ACC_PXT, vidx] += fp * xt
+            acc[ACC_PTHETA, vidx] += fp * theta
+            acc[ACC_PUX, vidx] += fp * dx
+            acc[ACC_PUY, vidx] += fp * dy
 
-            endR = min(tMaxX, tMaxY, tMaxZ)
-            plen = endR - startR
-
-            vg_num = 0
-            gnd_num = 0
-            for i in range(target_count):
-                if (vidx == vox_idx[i]):
-                    if (gnd[i] == 0):
-                        vg_num += 1
-                    else:
-                        gnd_num += 1
-
-            if last_voxel_hit:
-                woccl += w * last_canopy_hit_num
-                last_voxel_hit = False
-                last_canopy_hit_num = 0.0
-
-            if vg_num + gnd_num > 0:
-                hits[vidx] += w * vg_num
-                phit[vidx] += plen * vg_num
-                wmiss -= w * (vg_num + gnd_num)
-                woccl += w * gnd_num
-                last_voxel_hit = vg_num > 0
-                last_canopy_hit_num = vg_num
+            if last:
+                break
+            t = tn
+            if axis == 0:
+                ix += sx
+                tmx += tdx
+                if ix < 0 or ix >= nx:
+                    break
+            elif axis == 1:
+                iy += sy
+                tmy += tdy
+                if iy < 0 or iy >= ny:
+                    break
             else:
-                pmiss[vidx] += plen
-
-            occl[vidx] += woccl
-            miss[vidx] += wmiss
-
-            startR = endR
+                iz += sz
+                tmz += tdz
+                if iz < 0 or iz >= nz:
+                    break
 
 
-@njit
-def grid_intersection(x0, y0, z0, dx, dy, dz, bounds):
+@njit(cache=True)
+def rays_cross_grid(x, y, z, start, count, ux, uy, uz, bounds):
+    """Pulses (with a valid direction) whose ray through the first return crosses the grid."""
+    n = start.shape[0]
+    out = np.zeros(n, dtype=np.bool_)
+    gx = bounds[3] - bounds[0]
+    gy = bounds[4] - bounds[1]
+    gz = bounds[5] - bounds[2]
+    for p in range(n):
+        if count[p] == 0 or ux[p] != ux[p]:
+            continue
+        s = start[p]
+        tin = -np.inf
+        tout = np.inf
+        tin, tout = _slab(x[s] - bounds[0], np.float64(ux[p]), gx, tin, tout)
+        tin, tout = _slab(y[s] - bounds[1], np.float64(uy[p]), gy, tin, tout)
+        tin, tout = _slab(z[s] - bounds[2], np.float64(uz[p]), gz, tin, tout)
+        out[p] = tin < tout
+    return out
+
+
+@njit(cache=True)
+def run_linear_model_numba(xtheta, pgap, weights, null=-9999, min_n=3):
     """
-    Voxel grid intersection test using Smits algorithm
-    Inputs:
-       x0, y0, z0
-       dz, dy, dz
-       bounds
-    Outputs:
-       intersect: 0 = no intersection, 1 = intersection
-       tmin: min distance from the beam origin
-       tmax: max distance from the beam origin
+    Weighted least squares fit of -ln Pgap = paiv + xtheta paih per voxel
+    (Jupp et al., 2009), with xtheta = (2/pi) tan(theta) and both terms >= 0.
     """
-    if dx != 0:
-        divX = 1.0 / dx
-    else:
-        divX = 1.0
-    
-    if divX >= 0:
-    	tmin = (bounds[0] - x0) * divX
-    	tmax = (bounds[3] - x0) * divX
-    else:
-    	tmin = (bounds[3] - x0) * divX
-    	tmax = (bounds[0] - x0) * divX
-      
-    if dy != 0:
-        divY = 1.0 / dy
-    else:
-        divY = 1.0
-    
-    if divY >= 0:
-        tymin = (bounds[1] - y0) * divY
-        tymax = (bounds[4] - y0) * divY
-    else:
-    	tymin = (bounds[4] - y0) * divY
-    	tymax = (bounds[1] - y0) * divY
-    
-    if (tmin > tymax) or (tymin > tmax):
-        intersect = False
-        tmin = -1.0
-    else:
-        if tymin > tmin:
-            tmin = tymin
-        if tymax < tmax:
-            tmax = tymax
-
-        if dz != 0:
-            divZ = 1.0 / dz
-        else:
-            divZ = 1.0
-        
-        if divZ >= 0:
-            tzmin = (bounds[2] - z0) * divZ
-            tzmax = (bounds[5] - z0) * divZ
-        else:
-            tzmin = (bounds[5] - z0) * divZ
-            tzmax = (bounds[2] - z0) * divZ
-
-        if (tmin > tzmax) or (tzmin > tmax):
-            intersect = False
-            tmin = -1.0
-        else:
-            if tzmin > tmin:
-                tmin = tzmin
-            if tzmax < tmax:
-                tmax = tzmax
-            intersect = True
-    
-    return intersect,tmin,tmax
-
-
-@njit
-def run_linear_model_numba(zenith, pgap, weights, null=-9999, min_n=3):
-    """
-    Numba function to solve the linear model of Jupp et al. (2009)
-    across many voxels
-    """
-    sh = (pgap.shape[1],pgap.shape[2])
+    sh = (pgap.shape[1], pgap.shape[2])
     paiv = np.full(sh, null, dtype=np.float32)
     paih = np.full(sh, null, dtype=np.float32)
-    
     for x in range(pgap.shape[2]):
         for y in range(pgap.shape[1]):
-
-            valid = ((zenith[:,y,x] != null) & 
-                     (pgap[:,y,x] != null) & 
-                     (weights[:,y,x] != null))
+            valid = ((xtheta[:, y, x] != null) &
+                     (pgap[:, y, x] != null) &
+                     (weights[:, y, x] != null))
             n = np.count_nonzero(valid)
-            if n >= min_n:
+            if n < min_n:
+                continue
+            xt = xtheta[valid, y, x].astype(np.float64)
+            pg = pgap[valid, y, x].astype(np.float64)
+            wi = weights[valid, y, x].astype(np.float64)
+            k = np.full(n, -np.log(1e-5))
+            for j in range(n):
+                if pg[j] > 0:
+                    k[j] = -np.log(pg[j])
+            sw = np.sqrt(wi)
+            A = np.ones((n, 2))
+            A[:, 1] = xt
+            for j in range(n):
+                A[j, 0] *= sw[j]
+                A[j, 1] *= sw[j]
+            B = k * sw
+            result = np.linalg.lstsq(A, B)[0]
+            v, h = result[0], result[1]
+            if v < 0:
+                v = 0.0
+                pos = xt > 0
+                h = np.mean(k[pos] / xt[pos]) if np.any(pos) else 0.0
+            elif h < 0:
+                h = 0.0
+                v = np.mean(k)
+            paiv[y, x] = v
+            paih[y, x] = h
+    return paiv, paih
 
-                zenith_i = zenith[valid,y,x]
-                pgap_i = pgap[valid,y,x]
-                weights_i = weights[valid,y,x]
 
-                kthetal = np.full(n, np.log(1e-5), dtype=np.float32)
-                for j in range(n):
-                    if pgap_i[j] > 0:
-                        kthetal[j] = np.log(pgap_i[j])
-                xtheta = np.abs(2 * np.tan(zenith_i) / np.pi)
-            
-                W = np.sqrt(np.diag(weights_i))
-                A = np.ones((n,2), dtype=np.float32)
-                A[:,1] = xtheta
-                A = np.dot(W, A)
-                B = np.dot(-kthetal,W)
-                
-                result,resid,rank,s = np.linalg.lstsq(A, B)
-                paiv[y,x] = result[0]
-                paih[y,x] = result[1]
+@njit(cache=True)
+def fit_attenuation_numba(hits, path, path_cos, path_sin, null, min_n, min_xtheta_range,
+                          max_iter, tol):
+    """
+    Poisson ML fit of hits_j ~ a path_cos_j + b path_sin_j (a, b >= 0) per voxel
+    by multiplicative (EM) updates over the positions j observing the voxel.
+    """
+    npos, ny, nx = hits.shape
+    a_out = np.full((ny, nx), null, dtype=np.float32)
+    b_out = np.full((ny, nx), null, dtype=np.float32)
+    pad_out = np.full((ny, nx), null, dtype=np.float32)
+    mla_out = np.full((ny, nx), null, dtype=np.float32)
+    lam_out = np.full((ny, nx), null, dtype=np.float32)
+    n_out = np.zeros((ny, nx), dtype=np.uint8)
+    for y in range(ny):
+        for x in range(nx):
+            hs = 0.0
+            ps = 0.0
+            n = 0
+            rmin = np.inf
+            rmax = -np.inf
+            for j in range(npos):
+                pj = path[j, y, x]
+                if pj > 0 and pj != null:
+                    n += 1
+                    hs += hits[j, y, x]
+                    ps += pj
+                    r = path_sin[j, y, x] / path_cos[j, y, x] if path_cos[j, y, x] > 0 else MAX_XTHETA
+                    rmin = min(rmin, r)
+                    rmax = max(rmax, r)
+            n_out[y, x] = min(n, 255)
+            if n == 0:
+                continue
+            lam_out[y, x] = hs / ps
+            if n < min_n or rmax - rmin < min_xtheta_range:
+                continue
+            sc = 0.0
+            ss = 0.0
+            for j in range(npos):
+                pj = path[j, y, x]
+                if pj > 0 and pj != null:
+                    sc += path_cos[j, y, x]
+                    ss += path_sin[j, y, x]
+            a = hs / (sc + ss)
+            b = a
+            if hs > 0:
+                for it in range(max_iter):
+                    na = 0.0
+                    nb_ = 0.0
+                    for j in range(npos):
+                        pj = path[j, y, x]
+                        if pj > 0 and pj != null:
+                            mu = a * path_cos[j, y, x] + b * path_sin[j, y, x]
+                            if mu > 0:
+                                na += hits[j, y, x] * path_cos[j, y, x] / mu
+                                nb_ += hits[j, y, x] * path_sin[j, y, x] / mu
+                    a_new = a * na / sc if sc > 0 else 0.0
+                    b_new = b * nb_ / ss if ss > 0 else 0.0
+                    d = abs(a_new - a) + abs(b_new - b)
+                    a = a_new
+                    b = b_new
+                    if d < tol * (a + b + 1e-12):
+                        break
+            else:
+                a = 0.0
+                b = 0.0
+            a_out[y, x] = a
+            b_out[y, x] = b
+            pad_out[y, x] = a + b
+            mla_out[y, x] = np.degrees(np.arctan2(b, a)) if a + b > 0 else null
+    return a_out, b_out, pad_out, mla_out, lam_out, n_out
 
-                if result[0] < 0:
-                    paih[y,x] = np.mean(-kthetal)
-                    paiv[y,x] = 0.0
-                if result[1] < 0:
-                    paiv[y,x] = np.mean(-kthetal / xtheta)
-                    paih[y,x] = 0.0
-    
-    return paiv,paih
+
+def overview_levels(nx, ny, factors=(2, 4, 8)):
+    """Overview factors that leave at least 2 x 2 cells."""
+    return [f for f in factors if min(nx, ny) // f >= 2]
 
 
 def write_voxelgrid(vmodel, data, filename):
-    """
-    Write a voxelgrid to file
-    """
+    """Write a (nz, ny, nx) north-up voxel grid defined by a VoxelModel."""
     profile = {'driver': 'GTiff', 'dtype': 'float32', 'nodata': vmodel.nodata,
                'width': vmodel.nx, 'height': vmodel.ny, 'count': vmodel.nz,
-               'transform': Affine(vmodel.resolution, 0.0, vmodel.bounds[0], 0.0, 
+               'transform': Affine(vmodel.resolution, 0.0, vmodel.bounds[0], 0.0,
                                    -vmodel.resolution, vmodel.bounds[4]),
                'blockxsize': 256, 'blockysize': 256, 'tiled': True,
-               'compress': 'deflate', 'interleave': 'pixel'}
-    elev = vmodel.bounds[2] + vmodel.nz * vmodel.resolution
+               'compress': 'deflate', 'interleave': 'band'}
+    elev = vmodel.bounds[2] + np.arange(vmodel.nz) * vmodel.resolution
     with rio.Env():
         with rio.open(filename, 'w', **profile) as dst:
-            dst.write(data)
-            dst.build_overviews([2,4,8], Resampling.average)
+            dst.write(data.astype(np.float32))
+            levels = overview_levels(vmodel.nx, vmodel.ny)
+            if levels:
+                dst.build_overviews(levels, Resampling.average)
             for i in range(vmodel.nz):
-                description = f'{elev[i]:.02f}m'
-                dst.set_band_description(i+1, description)
+                dst.set_band_description(i + 1, f'{elev[i]:.02f}m')
 
 
 def multivoxel_worker(inputs):
-    """
-    Run the voxelization for a single scan
-    """
-    config,rxp_fn,transform_fn,rdbx_fn,prefix = inputs
-    vgrid = voxelization.VoxelGrid(dtm_filename=config['dtm'])
+    """Voxelize a single scan and return (name, filenames)."""
+    config, name, rxp_fn, transform_fn, rdbx_fn, prefix = inputs
+    vgrid = TLSVoxelGrid(dtm_filename=config['dtm'])
     vgrid.add_riegl_scan_position(rxp_fn, transform_fn, rdbx_file=rdbx_fn)
-    vgrid.voxelize_scan(config['bounds'], config['voxelsize'], save_counts=True)
+    vgrid.voxelize_scan(config['bounds'], config['resolution'], save_counts=True)
     vgrid.write_grids(prefix)
-    return vgrid.filenames
+    return name, vgrid.filenames
 
 
-def run_multivoxel_grids(rxp_fn, transform_fn, config,
-    rdbx_file=None, outdir=None, ncpu=1):
-    """
-    Multiprocessing of multiple scans on a voxel grid
-    """
-    npos = len(rxp_fn)
-    progress_bar = tqdm(total=npos)
-
-    def update_multivoxel_outputs(result):
-        """
-        Callback function for parallelized voxel processing
-        """
-        if result is not None:
-            name = result[0]
-            filenames = result[1]
-            config['positions'][name] = filenames
-        progress_bar.update()
-
-    pool = mp.Pool(ncpu)
-    for i in range(npos):
-        fn = os.path.basename(rxp_fn[i])
+def run_multivoxel_grids(rxp_fn, transform_fn, config, rdbx_file=None, outdir='.', ncpu=1):
+    """Voxelize multiple scans in parallel, adding their filenames to config['positions']."""
+    tasks = []
+    for i, fn in enumerate(rxp_fn):
+        name = os.path.splitext(os.path.basename(fn))[0]
         rdbx_fn = None if rdbx_file is None else rdbx_file[i]
-        name = os.path.splitext(fn)[0]
-        prefix = f'{outdir}/{name}'
-        pool.apply_async(multivoxel_worker, 
-                         (config,rxp_fn[i],transform_fn[i],rdbx_fn,prefix), 
-                         callback=update_multivoxel_outputs)
-    pool.close()
-    pool.join()
+        tasks.append((config, name, fn, transform_fn[i], rdbx_fn, os.path.join(outdir, name)))
+    with mp.Pool(ncpu) as pool:
+        for name, filenames in tqdm(pool.imap_unordered(multivoxel_worker, tasks), total=len(tasks)):
+            config['positions'][name] = filenames
+    return config
 
 
 def voxel_bounds_from_file(path):
-    """
-    Read bounding box from LAZ header (no point data loaded).
- 
-    Returns
-    -------
-    (xmin, ymin, zmin, xmax, ymax, zmax)
-    """
+    """(xmin, ymin, zmin, xmax, ymax, zmax) from a LAS/LAZ header."""
     with laspy.open(path) as f:
         hdr = f.header
     mins = np.asarray(hdr.min)
     maxs = np.asarray(hdr.max)
     return (mins[0], mins[1], mins[2], maxs[0], maxs[1], maxs[2])
- 
- 
-def _normalize(vx, vy, vz):
-    norm = np.sqrt(vx**2 + vy**2 + vz**2)
-    return vx / norm, vy / norm, vz / norm

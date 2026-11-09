@@ -9,6 +9,8 @@ dependencies:
   - pandas
   - scipy
   - laspy
+  - lazrs-python
+  - pytest
   - rasterio
   - tqdm
   - typed-ast

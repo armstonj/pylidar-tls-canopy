@@ -414,6 +414,6 @@ def read_transform_file(fn):
     Read the transform matrix (rotation + translation) 
     """
     with open(fn, 'rb') as f:
-        transform = np.loadtxt(f, delimiter=' ', dtype=np.float32)
+        transform = np.loadtxt(f, delimiter=' ', dtype=np.float64)
     return transform.T
 

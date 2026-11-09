@@ -212,23 +212,23 @@ class Jupp2009:
         paiv = np.zeros(self.pgap_theta_z.shape[1], dtype=np.float32)
         paih = np.zeros(self.pgap_theta_z.shape[1], dtype=np.float32)
         for i,h in enumerate(self.height_bin):
-            a = np.vstack([xtheta, np.ones(xtheta.shape[0])]).T
+            a = np.vstack([np.ones(xtheta.shape[0]), xtheta]).T
             y = -kthetal[:,i]
             valid = ~np.isnan(y)
             if np.count_nonzero(valid) > 2:
                 result,resid,rank,s = np.linalg.lstsq(a[valid,:], y[valid], rcond=None)
                 paiv[i] = result[0]
                 paih[i] = result[1]
-                if result[0] < 0:
-                    paih[i] = np.nanmean(y)
-                    paiv[i] = 0.0
                 if result[1] < 0:
-                    paiv[i] = np.mean(y[valid] / xtheta[valid])
+                    paiv[i] = np.nanmean(y)
                     paih[i] = 0.0
+                if result[0] < 0:
+                    paih[i] = np.mean(y[valid] / xtheta[valid])
+                    paiv[i] = 0.0
 
         pai = paiv + paih
         if calc_mla:
-            mla = np.degrees( np.arctan2(paiv,paih) )
+            mla = np.degrees( np.arctan2(paih,paiv) )
             return pai,mla
         else:
             return pai        
